@@ -403,8 +403,6 @@ io.on("connection", (socket) => {
   // Broadcast user count update to everyone
   io.emit('userCount', movieRoom.users.size);
   
-  // Handle video control events
-  // Handle video control events - IMPROVED VERSION
   socket.on("control", (data) => {
     try {
       const { type, time, timestamp } = data;
@@ -413,39 +411,38 @@ io.on("connection", (socket) => {
       
       // Update room state based on control type
       if (time !== undefined && !isNaN(time)) {
-        const newTime = parseFloat(time);
+        const newTime = Math.max(0, parseFloat(time)); // Ensure non-negative time
         
-        // For seek commands, always update the room time
+        // For seek commands, ALWAYS update the room time immediately
         if (type === 'seek') {
           movieRoom.currentTime = newTime;
-          console.log(`🎯 Room time updated to: ${newTime}s (seek)`);
+          movieRoom.isPlaying = movieRoom.isPlaying; // Maintain current play state
+          console.log(`🎯 SEEK: Room time updated to: ${newTime}s`);
         }
-        // For play/pause, only update if the time difference is reasonable
+        // For play/pause, update time but be more lenient with differences
         else if (type === 'play' || type === 'pause') {
+          // Only reject extremely large differences (like > 30 minutes)
           const timeDiff = Math.abs(movieRoom.currentTime - newTime);
           
-          if (timeDiff < 300) { // Less than 5 minutes difference
+          if (timeDiff < 1800) { // Less than 30 minutes difference
             movieRoom.currentTime = newTime;
-            console.log(`🔄 Room time updated to: ${newTime}s (${type}, diff: ${timeDiff.toFixed(1)}s)`);
+            console.log(`🔄 ${type.toUpperCase()}: Room time updated to: ${newTime}s (diff: ${timeDiff.toFixed(1)}s)`);
           } else {
-            console.log(`⚠️ Large time difference (${timeDiff.toFixed(1)}s) - keeping room time at ${movieRoom.currentTime}s`);
+            console.log(`⚠️ Large time difference (${timeDiff.toFixed(1)}s) - using seek time anyway for ${type}`);
+            movieRoom.currentTime = newTime; // Still update for user experience
           }
+          
+          // Update play state
+          movieRoom.isPlaying = (type === 'play');
         }
-        // For timesync, only update if difference is small
+        // For timesync, be more permissive
         else if (type === 'timesync') {
           const timeDiff = Math.abs(movieRoom.currentTime - newTime);
           
-          if (timeDiff < 10) { // Less than 10 seconds difference
+          if (timeDiff < 30) { // Less than 30 seconds difference
             movieRoom.currentTime = newTime;
           }
         }
-      }
-      
-      // Update play state
-      if (type === 'play') {
-        movieRoom.isPlaying = true;
-      } else if (type === 'pause') {
-        movieRoom.isPlaying = false;
       }
       
       movieRoom.lastUpdate = Date.now();
@@ -455,10 +452,10 @@ io.on("connection", (socket) => {
         movieRoom.users.get(userId).lastSeen = Date.now();
       }
       
-      // Broadcast to all other clients (not sender)
+      // Broadcast to all other clients with the EXACT time from the control
       socket.broadcast.emit("control", {
         type,
-        time: movieRoom.currentTime, // Send the room's current time
+        time: time !== undefined ? Math.max(0, parseFloat(time)) : movieRoom.currentTime,
         timestamp: Date.now(),
         from: userId.substring(0, 6)
       });
@@ -467,6 +464,7 @@ io.on("connection", (socket) => {
       console.error(`❌ Control error from ${userId.substring(0, 6)}: ${error.message}`);
     }
   });
+
   
   // Handle sync requests
   socket.on("requestSync", () => {
