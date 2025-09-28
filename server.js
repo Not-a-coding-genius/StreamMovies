@@ -1,7 +1,9 @@
 const express = require("express");
 const http = require("http");
+const https = require("https");
 const { Server } = require("socket.io");
 const path = require("path");
+const { URL } = require("url");
 
 const app = express();
 const server = http.createServer(app);
@@ -34,6 +36,163 @@ let movieRoom = {
   movieUrl: process.env.MOVIE_URL || ""
 };
 
+// Google Drive Proxy Route to Bypass CORS
+app.get('/proxy/:fileId', (req, res) => {
+  const fileId = req.params.fileId;
+  
+  // Try multiple Google Drive URLs
+  const urls = [
+    `https://drive.google.com/uc?export=download&id=${fileId}`,
+    `https://drive.usercontent.google.com/download?id=${fileId}&export=download`,
+    `https://docs.google.com/uc?export=download&id=${fileId}`,
+    `https://drive.google.com/file/d/${fileId}/preview`
+  ];
+  
+  console.log(`🔄 Proxying Google Drive file: ${fileId}`);
+  
+  // Set CORS headers
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET');
+  res.header('Access-Control-Allow-Headers', 'Range, Content-Range');
+  res.header('Accept-Ranges', 'bytes');
+  
+  // Try each URL until one works
+  let urlIndex = 0;
+  
+  function tryNextUrl() {
+    if (urlIndex >= urls.length) {
+      console.error(`❌ All proxy attempts failed for file: ${fileId}`);
+      return res.status(404).json({ 
+        error: 'All proxy attempts failed',
+        fileId: fileId,
+        attempts: urls.length
+      });
+    }
+    
+    const currentUrl = urls[urlIndex];
+    console.log(`Trying proxy URL ${urlIndex + 1}/${urls.length}: ${currentUrl}`);
+    
+    const urlObj = new URL(currentUrl);
+    const options = {
+      hostname: urlObj.hostname,
+      path: urlObj.pathname + urlObj.search,
+      method: 'GET',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': 'video/*,*/*;q=0.9',
+        'Accept-Encoding': 'identity',
+        'Connection': 'keep-alive'
+      },
+      timeout: 10000
+    };
+    
+    const protocol = urlObj.protocol === 'https:' ? https : http;
+    
+    const proxyReq = protocol.request(options, (proxyRes) => {
+      console.log(`Proxy response: ${proxyRes.statusCode} for URL ${urlIndex + 1}`);
+      
+      if (proxyRes.statusCode === 200) {
+        // Success! Forward the response
+        console.log(`✅ Proxy success for file: ${fileId} using URL ${urlIndex + 1}`);
+        
+        res.writeHead(200, {
+          'Content-Type': proxyRes.headers['content-type'] || 'video/mp4',
+          'Content-Length': proxyRes.headers['content-length'],
+          'Access-Control-Allow-Origin': '*',
+          'Accept-Ranges': 'bytes',
+          'Cache-Control': 'public, max-age=3600'
+        });
+        
+        proxyRes.pipe(res);
+        
+      } else if (proxyRes.statusCode >= 300 && proxyRes.statusCode < 400) {
+        // Handle redirects
+        const redirectUrl = proxyRes.headers.location;
+        if (redirectUrl) {
+          console.log(`🔄 Redirecting to: ${redirectUrl}`);
+          
+          // Follow the redirect
+          const redirectUrlObj = new URL(redirectUrl);
+          const redirectOptions = {
+            hostname: redirectUrlObj.hostname,
+            path: redirectUrlObj.pathname + redirectUrlObj.search,
+            method: 'GET',
+            headers: options.headers,
+            timeout: 10000
+          };
+          
+          const redirectProtocol = redirectUrlObj.protocol === 'https:' ? https : http;
+          
+          const redirectReq = redirectProtocol.request(redirectOptions, (redirectRes) => {
+            if (redirectRes.statusCode === 200) {
+              console.log(`✅ Redirect success for file: ${fileId}`);
+              
+              res.writeHead(200, {
+                'Content-Type': redirectRes.headers['content-type'] || 'video/mp4',
+                'Content-Length': redirectRes.headers['content-length'],
+                'Access-Control-Allow-Origin': '*',
+                'Accept-Ranges': 'bytes'
+              });
+              
+              redirectRes.pipe(res);
+            } else {
+              urlIndex++;
+              tryNextUrl();
+            }
+          });
+          
+          redirectReq.on('error', () => {
+            urlIndex++;
+            tryNextUrl();
+          });
+          
+          redirectReq.end();
+        } else {
+          urlIndex++;
+          tryNextUrl();
+        }
+      } else {
+        // Error, try next URL
+        console.warn(`❌ Proxy failed with status ${proxyRes.statusCode} for URL ${urlIndex + 1}`);
+        urlIndex++;
+        tryNextUrl();
+      }
+    });
+    
+    proxyReq.on('error', (err) => {
+      console.error(`❌ Proxy error for URL ${urlIndex + 1}:`, err.message);
+      urlIndex++;
+      tryNextUrl();
+    });
+    
+    proxyReq.on('timeout', () => {
+      console.error(`⏱️ Proxy timeout for URL ${urlIndex + 1}`);
+      proxyReq.destroy();
+      urlIndex++;
+      tryNextUrl();
+    });
+    
+    proxyReq.end();
+  }
+  
+  tryNextUrl();
+});
+
+// Proxy health check
+app.get('/proxy-test/:fileId', (req, res) => {
+  const fileId = req.params.fileId;
+  res.json({
+    status: 'Proxy endpoint ready',
+    fileId: fileId,
+    proxyUrl: `/proxy/${fileId}`,
+    timestamp: new Date().toISOString(),
+    testUrls: [
+      `https://drive.google.com/uc?export=download&id=${fileId}`,
+      `https://drive.usercontent.google.com/download?id=${fileId}&export=download`
+    ]
+  });
+});
+
 // Routes
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
@@ -45,7 +204,8 @@ app.get('/health', (req, res) => {
     users: movieRoom.users.size,
     uptime: Math.floor(process.uptime()),
     memory: process.memoryUsage(),
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    features: ['proxy', 'websockets', 'chat']
   });
 });
 
@@ -194,12 +354,17 @@ setInterval(() => {
 }, 5 * 60 * 1000);
 
 // Start server
-const PORT = process.env.PORT || 10000;  // Render uses 10000, not 3000
+const PORT = process.env.PORT || 10000;
 
-server.listen(PORT, '0.0.0.0', () => {   // MUST bind to 0.0.0.0
+// Configure server timeouts for video streaming
+server.keepAliveTimeout = 120000; // 120 seconds
+server.headersTimeout = 120000;   // 120 seconds
+
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`🎬 Movie Sync Server Started`);
   console.log(`🌐 Host: 0.0.0.0:${PORT}`);
   console.log(`📁 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🔧 Features: WebSocket, Chat, Google Drive Proxy`);
   console.log(`⏰ Started at: ${new Date().toLocaleString()}`);
 });
 

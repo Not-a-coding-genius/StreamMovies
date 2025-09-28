@@ -659,17 +659,17 @@
       const fileId = extractGoogleDriveId(url);
       
       if (fileId) {
-        // Google Drive URL - try multiple formats
+        // Google Drive URL - use server proxy to bypass CORS
         console.log(`Google Drive file ID extracted: ${fileId}`);
-        const urlsToTry = createGoogleDriveUrls(fileId);
-        tryMultipleUrls(urlsToTry, 0, url);
+        const proxyUrl = `/proxy/${fileId}`;
+        console.log(`Using proxy URL: ${proxyUrl}`);
+        loadMovie(proxyUrl, url);
       } else {
         // Regular video URL - load directly
         console.log('Loading external video:', url);
         loadMovie(url, url);
       }
     }
-
     // Try multiple URLs until one works
     function tryMultipleUrls(urls, index, originalUrl) {
       if (index >= urls.length) {
