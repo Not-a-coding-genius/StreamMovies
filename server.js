@@ -404,17 +404,44 @@ io.on("connection", (socket) => {
   io.emit('userCount', movieRoom.users.size);
   
   // Handle video control events
+  // Handle video control events - IMPROVED VERSION
   socket.on("control", (data) => {
     try {
       const { type, time, timestamp } = data;
       
       console.log(`🎮 Control ${type.toUpperCase()}: ${time}s from ${userId.substring(0, 6)} at ${new Date().toLocaleTimeString()}`);
       
-      // Update room state
+      // Update room state based on control type
       if (time !== undefined && !isNaN(time)) {
-        movieRoom.currentTime = parseFloat(time);
+        const newTime = parseFloat(time);
+        
+        // For seek commands, always update the room time
+        if (type === 'seek') {
+          movieRoom.currentTime = newTime;
+          console.log(`🎯 Room time updated to: ${newTime}s (seek)`);
+        }
+        // For play/pause, only update if the time difference is reasonable
+        else if (type === 'play' || type === 'pause') {
+          const timeDiff = Math.abs(movieRoom.currentTime - newTime);
+          
+          if (timeDiff < 300) { // Less than 5 minutes difference
+            movieRoom.currentTime = newTime;
+            console.log(`🔄 Room time updated to: ${newTime}s (${type}, diff: ${timeDiff.toFixed(1)}s)`);
+          } else {
+            console.log(`⚠️ Large time difference (${timeDiff.toFixed(1)}s) - keeping room time at ${movieRoom.currentTime}s`);
+          }
+        }
+        // For timesync, only update if difference is small
+        else if (type === 'timesync') {
+          const timeDiff = Math.abs(movieRoom.currentTime - newTime);
+          
+          if (timeDiff < 10) { // Less than 10 seconds difference
+            movieRoom.currentTime = newTime;
+          }
+        }
       }
       
+      // Update play state
       if (type === 'play') {
         movieRoom.isPlaying = true;
       } else if (type === 'pause') {
@@ -431,7 +458,7 @@ io.on("connection", (socket) => {
       // Broadcast to all other clients (not sender)
       socket.broadcast.emit("control", {
         type,
-        time: movieRoom.currentTime,
+        time: movieRoom.currentTime, // Send the room's current time
         timestamp: Date.now(),
         from: userId.substring(0, 6)
       });
