@@ -477,14 +477,14 @@
     <!-- Video Section -->
     <div class="video-section">
       <div class="video-container">
-        <video id="player" controls preload="metadata" crossorigin="anonymous">
+        <video id="player" controls preload="metadata" crossorigin="anonymous" playsinline>
           <!-- Video source will be set dynamically -->
         </video>
         
         <div class="video-overlay show" id="videoOverlay">
           <h3>🎥 Set Up Your Movie</h3>
-          <p>Enter your Google Drive video URL to get started</p>
-          <input type="text" id="movieUrlInput" placeholder="https://drive.google.com/file/d/YOUR_FILE_ID/view">
+          <p>Enter your Google Drive video URL or any video link</p>
+          <input type="text" id="movieUrlInput" placeholder="https://drive.google.com/file/d/YOUR_FILE_ID/view OR any video URL">
           <div>
             <button onclick="loadMovieFromUrl()">🚀 Load Movie</button>
             <button class="secondary" onclick="showUrlHelp()">❓ Need Help?</button>
@@ -616,54 +616,114 @@
       }
     }
 
-  // Replace your existing extractGoogleDriveId function with this:
-  function extractGoogleDriveId(url) {
-    // Handle different Google Drive URL formats
-    let match;
-    
-    // Format 1: /file/d/FILE_ID/view (share URLs)
-    match = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
-    if (match) return match[1];
-    
-    // Format 2: /uc?export=download&id=FILE_ID (direct URLs)
-    match = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
-    if (match) return match[1];
-    
-    // Format 3: docs.google.com/uc?export=download&id=FILE_ID
-    match = url.match(/docs\.google\.com\/uc\?export=download&id=([a-zA-Z0-9_-]+)/);
-    if (match) return match[1];
-    
-    return null;
-  }
-
-
-    function createDirectUrl(fileId) {
-      return `https://drive.google.com/uc?export=download&id=${fileId}`;
+    // Enhanced Google Drive ID extraction - handles multiple formats
+    function extractGoogleDriveId(url) {
+      let match;
+      
+      // Format 1: /file/d/FILE_ID/view (share URLs)
+      match = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+      if (match) return match[1];
+      
+      // Format 2: ?id=FILE_ID or &id=FILE_ID (direct URLs)
+      match = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+      if (match) return match[1];
+      
+      // Format 3: Just the file ID by itself
+      if (/^[a-zA-Z0-9_-]{25,}$/.test(url.trim())) {
+        return url.trim();
+      }
+      
+      return null;
     }
 
-    // Movie Loading Functions
+    // Create multiple URL formats to try
+    function createGoogleDriveUrls(fileId) {
+      return [
+        `https://drive.google.com/uc?export=download&id=${fileId}`,
+        `https://drive.google.com/file/d/${fileId}/preview`,
+        `https://drive.usercontent.google.com/download?id=${fileId}&export=download`,
+        `https://docs.google.com/uc?export=download&id=${fileId}`,
+        `https://drive.google.com/uc?id=${fileId}&export=download`
+      ];
+    }
+
+    // Main function to load movie from URL
     function loadMovieFromUrl() {
       const url = movieUrlInput.value.trim();
       if (!url) {
-        showToast('Please enter a Google Drive URL', 'error');
+        showToast('Please enter a video URL', 'error');
         return;
       }
 
+      // Check if it's a Google Drive URL
       const fileId = extractGoogleDriveId(url);
-      if (!fileId) {
-        showToast('Invalid URL. Please use a Google Drive link.', 'error');
-        return;
-      }
-
-      // Always use the direct download format
-      const directUrl = `https://docs.google.com/uc?export=download&id=${fileId}`;
-      console.log(`File ID extracted: ${fileId}`);
-      console.log(`Using direct URL: ${directUrl}`);
       
-      loadMovie(directUrl, url);
+      if (fileId) {
+        // Google Drive URL - try multiple formats
+        console.log(`Google Drive file ID extracted: ${fileId}`);
+        const urlsToTry = createGoogleDriveUrls(fileId);
+        tryMultipleUrls(urlsToTry, 0, url);
+      } else {
+        // Regular video URL - load directly
+        console.log('Loading external video:', url);
+        loadMovie(url, url);
+      }
     }
 
+    // Try multiple URLs until one works
+    function tryMultipleUrls(urls, index, originalUrl) {
+      if (index >= urls.length) {
+        updateStatus('Failed to load movie', 'disconnected');
+        showToast('All URL formats failed. Try a different video or check permissions.', 'error');
+        videoOverlay.classList.add('show');
+        movieLoaded = false;
+        return;
+      }
+      
+      const currentUrl = urls[index];
+      console.log(`Trying URL ${index + 1}/${urls.length}: ${currentUrl}`);
+      updateStatus(`Trying format ${index + 1}/${urls.length}...`, 'syncing');
+      
+      // Create new video element for testing
+      const testVideo = document.createElement('video');
+      testVideo.preload = 'metadata';
+      testVideo.crossOrigin = 'anonymous';
+      
+      // Success handler
+      const onSuccess = () => {
+        console.log(`✅ Format ${index + 1} worked!`);
+        loadMovie(currentUrl, originalUrl);
+        cleanup();
+      };
+      
+      // Error handler - try next URL
+      const onError = (e) => {
+        console.warn(`❌ Format ${index + 1} failed:`, e.target?.error?.message || 'Unknown error');
+        cleanup();
+        
+        // Try next URL after brief delay
+        setTimeout(() => {
+          tryMultipleUrls(urls, index + 1, originalUrl);
+        }, 500);
+      };
+      
+      const cleanup = () => {
+        testVideo.removeEventListener('loadedmetadata', onSuccess);
+        testVideo.removeEventListener('canplay', onSuccess);
+        testVideo.removeEventListener('error', onError);
+      };
+      
+      // Add event listeners
+      testVideo.addEventListener('loadedmetadata', onSuccess, { once: true });
+      testVideo.addEventListener('canplay', onSuccess, { once: true });
+      testVideo.addEventListener('error', onError, { once: true });
+      
+      // Test the URL
+      testVideo.src = currentUrl;
+      testVideo.load();
+    }
 
+    // Load movie into the main player
     function loadMovie(url, originalUrl) {
       updateStatus('Loading movie...', 'syncing');
       
@@ -687,27 +747,34 @@
       player.addEventListener('error', (e) => {
         console.error('Video load error:', e);
         updateStatus('Failed to load movie', 'disconnected');
-        showToast('Failed to load movie. Check URL and permissions.', 'error');
+        showToast('Failed to load movie. Try a different format or check permissions.', 'error');
         videoOverlay.classList.add('show');
         movieLoaded = false;
       }, { once: true });
     }
 
     function showUrlHelp() {
-      alert(`📋 How to get Google Drive video URL:
+      alert(`📋 How to use:
 
+🎬 GOOGLE DRIVE VIDEOS:
 1. Upload your movie to Google Drive
-2. Right-click on the video file
-3. Select "Share" → "Get link" 
-4. Change permissions to "Anyone with the link can view"
-5. Copy the link (should look like):
-   https://drive.google.com/file/d/1ABC123DEF456/view
+2. Right-click → Share → "Anyone with the link can view"
+3. Copy the share link
+4. Paste it above and click "Load Movie"
 
-6. Paste that link in the input field above
+🌐 EXTERNAL VIDEOS:
+You can also use direct video URLs from:
+• Sample videos for testing
+• Your own hosted videos  
+• Public video links
 
-⚠️ Important: The video must be shared publicly for this to work!
+💡 TIPS:
+• Keep videos under 2GB for best performance
+• Use .mp4 format for maximum compatibility
+• Make sure Google Drive files are shared publicly
 
-💡 Tip: For best performance, keep video files under 2GB.`);
+⚠️ TROUBLESHOOTING:
+If a video fails to load, the app will automatically try multiple URL formats to find one that works.`);
     }
 
     // Video Event Listeners
@@ -969,7 +1036,7 @@
     const observer = new MutationObserver((mutations) => {
       mutations.forEach((mutation) => {
         if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
-          if (videoOverlay.classList.contains('show')) {
+          if (videoOverlay.classList.contains('show') && !movieLoaded) {
             setTimeout(() => movieUrlInput.focus(), 300);
           }
         }
