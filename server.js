@@ -36,7 +36,7 @@ let movieRoom = {
   movieUrl: process.env.MOVIE_URL || ""
 };
 
-// Google Drive Proxy Route to Bypass CORS
+// Google Drive Proxy Route to Bypass CORS (FIXED VERSION)
 app.get('/proxy/:fileId', (req, res) => {
   const fileId = req.params.fileId;
   
@@ -56,17 +56,23 @@ app.get('/proxy/:fileId', (req, res) => {
   res.header('Access-Control-Allow-Headers', 'Range, Content-Range');
   res.header('Accept-Ranges', 'bytes');
   
-  // Try each URL until one works
   let urlIndex = 0;
+  let responseHandled = false; // Flag to prevent multiple responses
   
   function tryNextUrl() {
+    if (responseHandled) return; // Prevent multiple responses
+    
     if (urlIndex >= urls.length) {
       console.error(`❌ All proxy attempts failed for file: ${fileId}`);
-      return res.status(404).json({ 
-        error: 'All proxy attempts failed',
-        fileId: fileId,
-        attempts: urls.length
-      });
+      if (!responseHandled) {
+        responseHandled = true;
+        return res.status(404).json({ 
+          error: 'All proxy attempts failed',
+          fileId: fileId,
+          attempts: urls.length
+        });
+      }
+      return;
     }
     
     const currentUrl = urls[urlIndex];
@@ -83,93 +89,130 @@ app.get('/proxy/:fileId', (req, res) => {
         'Accept-Encoding': 'identity',
         'Connection': 'keep-alive'
       },
-      timeout: 10000
+      timeout: 15000 // Increased timeout
     };
     
     const protocol = urlObj.protocol === 'https:' ? https : http;
     
     const proxyReq = protocol.request(options, (proxyRes) => {
+      if (responseHandled) return; // Prevent multiple responses
+      
       console.log(`Proxy response: ${proxyRes.statusCode} for URL ${urlIndex + 1}`);
       
       if (proxyRes.statusCode === 200) {
         // Success! Forward the response
         console.log(`✅ Proxy success for file: ${fileId} using URL ${urlIndex + 1}`);
         
-        res.writeHead(200, {
-          'Content-Type': proxyRes.headers['content-type'] || 'video/mp4',
-          'Content-Length': proxyRes.headers['content-length'],
-          'Access-Control-Allow-Origin': '*',
-          'Accept-Ranges': 'bytes',
-          'Cache-Control': 'public, max-age=3600'
-        });
-        
-        proxyRes.pipe(res);
+        if (!responseHandled) {
+          responseHandled = true;
+          
+          res.writeHead(200, {
+            'Content-Type': proxyRes.headers['content-type'] || 'video/mp4',
+            'Content-Length': proxyRes.headers['content-length'],
+            'Access-Control-Allow-Origin': '*',
+            'Accept-Ranges': 'bytes',
+            'Cache-Control': 'public, max-age=3600'
+          });
+          
+          proxyRes.pipe(res);
+          
+          // Handle pipe errors
+          proxyRes.on('error', (err) => {
+            console.error('Pipe error:', err.message);
+          });
+        }
         
       } else if (proxyRes.statusCode >= 300 && proxyRes.statusCode < 400) {
         // Handle redirects
         const redirectUrl = proxyRes.headers.location;
-        if (redirectUrl) {
+        if (redirectUrl && !responseHandled) {
           console.log(`🔄 Redirecting to: ${redirectUrl}`);
           
-          // Follow the redirect
+          // Follow the redirect with a new request
           const redirectUrlObj = new URL(redirectUrl);
           const redirectOptions = {
             hostname: redirectUrlObj.hostname,
             path: redirectUrlObj.pathname + redirectUrlObj.search,
             method: 'GET',
-            headers: options.headers,
-            timeout: 10000
+            headers: {
+              'User-Agent': options.headers['User-Agent'],
+              'Accept': options.headers['Accept']
+            },
+            timeout: 15000
           };
           
           const redirectProtocol = redirectUrlObj.protocol === 'https:' ? https : http;
           
           const redirectReq = redirectProtocol.request(redirectOptions, (redirectRes) => {
+            if (responseHandled) return;
+            
             if (redirectRes.statusCode === 200) {
               console.log(`✅ Redirect success for file: ${fileId}`);
               
-              res.writeHead(200, {
-                'Content-Type': redirectRes.headers['content-type'] || 'video/mp4',
-                'Content-Length': redirectRes.headers['content-length'],
-                'Access-Control-Allow-Origin': '*',
-                'Accept-Ranges': 'bytes'
-              });
-              
-              redirectRes.pipe(res);
+              if (!responseHandled) {
+                responseHandled = true;
+                
+                res.writeHead(200, {
+                  'Content-Type': redirectRes.headers['content-type'] || 'video/mp4',
+                  'Content-Length': redirectRes.headers['content-length'],
+                  'Access-Control-Allow-Origin': '*',
+                  'Accept-Ranges': 'bytes'
+                });
+                
+                redirectRes.pipe(res);
+                
+                redirectRes.on('error', (err) => {
+                  console.error('Redirect pipe error:', err.message);
+                });
+              }
             } else {
+              console.warn(`❌ Redirect failed with status ${redirectRes.statusCode}`);
               urlIndex++;
-              tryNextUrl();
+              setTimeout(tryNextUrl, 500); // Small delay before trying next URL
             }
           });
           
-          redirectReq.on('error', () => {
+          redirectReq.on('error', (err) => {
+            console.error(`❌ Redirect request error:`, err.message);
             urlIndex++;
-            tryNextUrl();
+            setTimeout(tryNextUrl, 500);
+          });
+          
+          redirectReq.on('timeout', () => {
+            console.error(`⏱️ Redirect timeout`);
+            redirectReq.destroy();
+            urlIndex++;
+            setTimeout(tryNextUrl, 500);
           });
           
           redirectReq.end();
         } else {
           urlIndex++;
-          tryNextUrl();
+          setTimeout(tryNextUrl, 500);
         }
       } else {
         // Error, try next URL
         console.warn(`❌ Proxy failed with status ${proxyRes.statusCode} for URL ${urlIndex + 1}`);
         urlIndex++;
-        tryNextUrl();
+        setTimeout(tryNextUrl, 500);
       }
     });
     
     proxyReq.on('error', (err) => {
       console.error(`❌ Proxy error for URL ${urlIndex + 1}:`, err.message);
-      urlIndex++;
-      tryNextUrl();
+      if (!responseHandled) {
+        urlIndex++;
+        setTimeout(tryNextUrl, 500);
+      }
     });
     
     proxyReq.on('timeout', () => {
       console.error(`⏱️ Proxy timeout for URL ${urlIndex + 1}`);
       proxyReq.destroy();
-      urlIndex++;
-      tryNextUrl();
+      if (!responseHandled) {
+        urlIndex++;
+        setTimeout(tryNextUrl, 500);
+      }
     });
     
     proxyReq.end();
