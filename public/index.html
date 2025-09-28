@@ -578,6 +578,7 @@
     let isBuffering = false;
     let lastSyncTime = null;
     let movieLoaded = false;
+    let isSeeking = false; 
 
     // Utility Functions
     function updateStatus(status, type = 'connected') {
@@ -605,7 +606,7 @@
     }
 
     function emitControl(type, time, force = false) {
-      if ((!suppressLocal || force) && movieLoaded) {
+      if ((!suppressLocal || force) && movieLoaded && !isSeeking) {
         const controlData = { 
           type, 
           time: parseFloat(time.toFixed(2)),
@@ -795,39 +796,49 @@ If a video fails to load, the app will automatically try multiple URL formats to
     });
 
     player.addEventListener('play', () => {
-      if (!isBuffering && movieLoaded) {
+      if (!isBuffering && movieLoaded && !isSeeking) {
         emitControl('play', player.currentTime);
         updateStatus('Playing', 'connected');
       }
     });
 
     player.addEventListener('pause', () => {
-      if (movieLoaded) {
+      if (movieLoaded && !isSeeking) {
         emitControl('pause', player.currentTime);
         updateStatus('Paused', 'connected');
       }
     });
 
-    
-    player.addEventListener('seeked', () => {
-      if (movieLoaded && !suppressLocal) {
-        console.log(`🎯 Local seek to: ${player.currentTime}s`);
-        emitControl('seek', player.currentTime);
-        updateStatus('Seek completed', 'connected');
-      }
-    });
-
-    // ADD: Handle seeking start to prevent sync conflicts
+    // FIXED: Handle seeking start - prevent other events during seek
     player.addEventListener('seeking', () => {
       if (movieLoaded) {
+        isSeeking = true;
         console.log(`🎯 Seeking started at: ${player.currentTime}s`);
         updateStatus('Seeking...', 'syncing');
       }
     });
 
+    // FIXED: Handle seek completion - only emit if user initiated
+    player.addEventListener('seeked', () => {
+      if (movieLoaded) {
+        console.log(`🎯 Seek completed to: ${player.currentTime}s, suppressLocal: ${suppressLocal}`);
+        
+        // Only emit if this was a user-initiated seek (not from sync)
+        if (!suppressLocal) {
+          emitControl('seek', player.currentTime);
+          updateStatus('Seek completed', 'connected');
+        }
+        
+        // Reset seeking state after a brief delay
+        setTimeout(() => {
+          isSeeking = false;
+        }, 100);
+      }
+    });
+
     // Periodic time sync (every 5 seconds when playing)
     setInterval(() => {
-      if (!player.paused && !suppressLocal && !isBuffering && !player.seeking && movieLoaded) {
+      if (!player.paused && !suppressLocal && !isBuffering && !isSeeking && movieLoaded) {
         socket.emit('control', { 
           type: 'timesync', 
           time: parseFloat(player.currentTime.toFixed(2)),
@@ -875,61 +886,65 @@ If a video fails to load, the app will automatically try multiple URL formats to
         showToast('Friend shared a movie URL');
       }
     });
-    // FIXED: Better sync logic that handles seeking properly
+    // COMPLETELY REWRITTEN: Better sync logic that handles seeking properly
     socket.on('control', (msg) => {
       if (!movieLoaded) return;
       
-      console.log(`📥 Received: ${msg.type} at ${msg.time}s from ${msg.from}`);
+      console.log(`📥 Received: ${msg.type} at ${msg.time}s from ${msg.from || 'server'}`);
       
       const timeDiff = Math.abs(player.currentTime - (msg.time || 0));
-      const isSeekCommand = msg.type === 'seek';
       const isLargeTimeDiff = timeDiff > SYNC_THRESHOLD;
       
+      // Set suppress flag BEFORE making changes
       suppressLocal = true;
       
       try {
         switch(msg.type) {
           case 'play':
-            // Only sync time if there's a significant difference AND it's not right after our own seek
-            if (isLargeTimeDiff && timeDiff < 300) { // Don't sync if more than 5min difference (likely our seek)
+            // Sync time if there's a significant difference
+            if (isLargeTimeDiff && timeDiff < 1800) { // Max 30 minutes
               console.log(`🔄 Syncing time on play: ${timeDiff.toFixed(1)}s difference`);
               player.currentTime = msg.time;
             }
             
-            player.play().catch(e => console.warn('Play failed:', e));
+            if (player.paused) {
+              player.play().catch(e => console.warn('Play failed:', e));
+            }
             updateStatus('Playing (synced)', 'connected');
             updateLastSync();
             break;
             
           case 'pause':
-            // Only sync time if there's a reasonable difference
-            if (isLargeTimeDiff && timeDiff < 300) {
+            // Sync time if there's a significant difference
+            if (isLargeTimeDiff && timeDiff < 1800) {
               console.log(`🔄 Syncing time on pause: ${timeDiff.toFixed(1)}s difference`);
               player.currentTime = msg.time;
             }
             
-            player.pause();
+            if (!player.paused) {
+              player.pause();
+            }
             updateStatus('Paused (synced)', 'connected');
             updateLastSync();
             break;
             
           case 'seek':
-            // ALWAYS sync on explicit seek commands
-            console.log(`🎯 Explicit seek to: ${msg.time}s`);
-            player.currentTime = msg.time;
+            // ALWAYS sync on explicit seek commands - this is the key fix
+            console.log(`🎯 Explicit seek to: ${msg.time}s (current: ${player.currentTime}s)`);
+            if (Math.abs(player.currentTime - msg.time) > 0.5) { // Only seek if meaningful difference
+              player.currentTime = msg.time;
+            }
             updateStatus('Seeking (synced)', 'syncing');
             updateLastSync();
             break;
             
           case 'timesync':
             // Only auto-sync if the difference is reasonable and we're playing
-            if (isLargeTimeDiff && !player.paused && timeDiff < 30) { // Max 30s auto-sync
+            if (isLargeTimeDiff && !player.paused && timeDiff < 30 && !isSeeking) {
               console.log(`🔄 Auto-sync: ${timeDiff.toFixed(1)}s difference`);
               player.currentTime = msg.time;
               updateStatus('Auto-synced', 'connected');
               updateLastSync();
-            } else if (timeDiff > 30) {
-              console.log(`⚠️ Large time difference (${timeDiff.toFixed(1)}s) - ignoring auto-sync`);
             }
             break;
         }
@@ -937,8 +952,12 @@ If a video fails to load, the app will automatically try multiple URL formats to
         console.error('Error handling control message:', error);
       }
       
-      // Shorter suppress time to allow quicker local control
-      setTimeout(() => { suppressLocal = false; }, 500); // Reduced from 800ms
+      // LONGER suppress time for seek operations, shorter for others
+      const suppressTime = msg.type === 'seek' ? 1500 : 800;
+      setTimeout(() => { 
+        suppressLocal = false; 
+        console.log(`🔓 suppressLocal reset after ${suppressTime}ms`);
+      }, suppressTime);
     });
 
 
