@@ -36,11 +36,10 @@ let movieRoom = {
   movieUrl: process.env.MOVIE_URL || ""
 };
 
-// Google Drive Proxy Route to Bypass CORS (FIXED VERSION)
+// Google Drive Proxy Route - LARGE FILE STREAMING VERSION
 app.get('/proxy/:fileId', (req, res) => {
   const fileId = req.params.fileId;
   
-  // Try multiple Google Drive URLs
   const urls = [
     `https://drive.google.com/uc?export=download&id=${fileId}`,
     `https://drive.usercontent.google.com/download?id=${fileId}&export=download`,
@@ -57,10 +56,19 @@ app.get('/proxy/:fileId', (req, res) => {
   res.header('Accept-Ranges', 'bytes');
   
   let urlIndex = 0;
-  let responseHandled = false; // Flag to prevent multiple responses
+  let responseHandled = false;
+  
+  // Set response timeout to 10 minutes for large files
+  res.setTimeout(600000, () => {
+    console.log(`⏱️ Response timeout (10min) for file: ${fileId}`);
+    if (!responseHandled) {
+      responseHandled = true;
+      res.status(408).json({ error: 'Request timeout' });
+    }
+  });
   
   function tryNextUrl() {
-    if (responseHandled) return; // Prevent multiple responses
+    if (responseHandled) return;
     
     if (urlIndex >= urls.length) {
       console.error(`❌ All proxy attempts failed for file: ${fileId}`);
@@ -87,48 +95,75 @@ app.get('/proxy/:fileId', (req, res) => {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         'Accept': 'video/*,*/*;q=0.9',
         'Accept-Encoding': 'identity',
-        'Connection': 'keep-alive'
+        'Connection': 'keep-alive',
+        'Cache-Control': 'no-cache'
       },
-      timeout: 15000 // Increased timeout
+      timeout: 60000 // 60 seconds for connection
     };
     
     const protocol = urlObj.protocol === 'https:' ? https : http;
     
     const proxyReq = protocol.request(options, (proxyRes) => {
-      if (responseHandled) return; // Prevent multiple responses
+      if (responseHandled) return;
       
       console.log(`Proxy response: ${proxyRes.statusCode} for URL ${urlIndex + 1}`);
       
       if (proxyRes.statusCode === 200) {
-        // Success! Forward the response
         console.log(`✅ Proxy success for file: ${fileId} using URL ${urlIndex + 1}`);
         
         if (!responseHandled) {
           responseHandled = true;
           
-          res.writeHead(200, {
+          // Headers for large file streaming
+          const headers = {
             'Content-Type': proxyRes.headers['content-type'] || 'video/mp4',
-            'Content-Length': proxyRes.headers['content-length'],
             'Access-Control-Allow-Origin': '*',
             'Accept-Ranges': 'bytes',
-            'Cache-Control': 'public, max-age=3600'
+            'Cache-Control': 'public, max-age=86400'
+          };
+          
+          // Include content length if available
+          if (proxyRes.headers['content-length']) {
+            headers['Content-Length'] = proxyRes.headers['content-length'];
+            console.log(`📏 File size: ${Math.round(proxyRes.headers['content-length'] / 1024 / 1024)}MB`);
+          }
+          
+          res.writeHead(200, headers);
+          
+          // Handle large file streaming
+          let bytesStreamed = 0;
+          const startTime = Date.now();
+          
+          proxyRes.on('data', (chunk) => {
+            bytesStreamed += chunk.length;
+            
+            // Log progress every 10MB
+            if (bytesStreamed % (10 * 1024 * 1024) < chunk.length) {
+              console.log(`📊 Streamed ${Math.round(bytesStreamed / 1024 / 1024)}MB for ${fileId}`);
+            }
           });
           
-          proxyRes.pipe(res);
+          proxyRes.on('end', () => {
+            const duration = (Date.now() - startTime) / 1000;
+            console.log(`✅ Streaming completed: ${fileId} (${Math.round(bytesStreamed / 1024 / 1024)}MB in ${duration}s)`);
+          });
           
-          // Handle pipe errors
           proxyRes.on('error', (err) => {
-            console.error('Pipe error:', err.message);
+            console.error(`❌ Streaming error for ${fileId}:`, err.message);
+            if (!res.headersSent) {
+              res.status(500).end();
+            }
           });
+          
+          // Pipe the response
+          proxyRes.pipe(res);
         }
         
       } else if (proxyRes.statusCode >= 300 && proxyRes.statusCode < 400) {
-        // Handle redirects
         const redirectUrl = proxyRes.headers.location;
         if (redirectUrl && !responseHandled) {
           console.log(`🔄 Redirecting to: ${redirectUrl}`);
           
-          // Follow the redirect with a new request
           const redirectUrlObj = new URL(redirectUrl);
           const redirectOptions = {
             hostname: redirectUrlObj.hostname,
@@ -136,9 +171,10 @@ app.get('/proxy/:fileId', (req, res) => {
             method: 'GET',
             headers: {
               'User-Agent': options.headers['User-Agent'],
-              'Accept': options.headers['Accept']
+              'Accept': options.headers['Accept'],
+              'Cache-Control': 'no-cache'
             },
-            timeout: 15000
+            timeout: 60000
           };
           
           const redirectProtocol = redirectUrlObj.protocol === 'https:' ? https : http;
@@ -152,49 +188,73 @@ app.get('/proxy/:fileId', (req, res) => {
               if (!responseHandled) {
                 responseHandled = true;
                 
-                res.writeHead(200, {
+                const redirectHeaders = {
                   'Content-Type': redirectRes.headers['content-type'] || 'video/mp4',
-                  'Content-Length': redirectRes.headers['content-length'],
                   'Access-Control-Allow-Origin': '*',
-                  'Accept-Ranges': 'bytes'
+                  'Accept-Ranges': 'bytes',
+                  'Cache-Control': 'public, max-age=86400'
+                };
+                
+                if (redirectRes.headers['content-length']) {
+                  redirectHeaders['Content-Length'] = redirectRes.headers['content-length'];
+                  console.log(`📏 Redirect file size: ${Math.round(redirectRes.headers['content-length'] / 1024 / 1024)}MB`);
+                }
+                
+                res.writeHead(200, redirectHeaders);
+                
+                // Handle redirect streaming with progress
+                let redirectBytesStreamed = 0;
+                const redirectStartTime = Date.now();
+                
+                redirectRes.on('data', (chunk) => {
+                  redirectBytesStreamed += chunk.length;
+                  
+                  // Log progress every 10MB
+                  if (redirectBytesStreamed % (10 * 1024 * 1024) < chunk.length) {
+                    console.log(`📊 Redirect streamed ${Math.round(redirectBytesStreamed / 1024 / 1024)}MB for ${fileId}`);
+                  }
+                });
+                
+                redirectRes.on('end', () => {
+                  const redirectDuration = (Date.now() - redirectStartTime) / 1000;
+                  console.log(`✅ Redirect streaming completed: ${fileId} (${Math.round(redirectBytesStreamed / 1024 / 1024)}MB in ${redirectDuration}s)`);
+                });
+                
+                redirectRes.on('error', (err) => {
+                  console.error(`❌ Redirect streaming error for ${fileId}:`, err.message);
                 });
                 
                 redirectRes.pipe(res);
-                
-                redirectRes.on('error', (err) => {
-                  console.error('Redirect pipe error:', err.message);
-                });
               }
             } else {
               console.warn(`❌ Redirect failed with status ${redirectRes.statusCode}`);
               urlIndex++;
-              setTimeout(tryNextUrl, 500); // Small delay before trying next URL
+              setTimeout(tryNextUrl, 1000);
             }
           });
           
           redirectReq.on('error', (err) => {
             console.error(`❌ Redirect request error:`, err.message);
             urlIndex++;
-            setTimeout(tryNextUrl, 500);
+            setTimeout(tryNextUrl, 1000);
           });
           
           redirectReq.on('timeout', () => {
-            console.error(`⏱️ Redirect timeout`);
+            console.error(`⏱️ Redirect connection timeout`);
             redirectReq.destroy();
             urlIndex++;
-            setTimeout(tryNextUrl, 500);
+            setTimeout(tryNextUrl, 1000);
           });
           
           redirectReq.end();
         } else {
           urlIndex++;
-          setTimeout(tryNextUrl, 500);
+          setTimeout(tryNextUrl, 1000);
         }
       } else {
-        // Error, try next URL
         console.warn(`❌ Proxy failed with status ${proxyRes.statusCode} for URL ${urlIndex + 1}`);
         urlIndex++;
-        setTimeout(tryNextUrl, 500);
+        setTimeout(tryNextUrl, 1000);
       }
     });
     
@@ -202,16 +262,16 @@ app.get('/proxy/:fileId', (req, res) => {
       console.error(`❌ Proxy error for URL ${urlIndex + 1}:`, err.message);
       if (!responseHandled) {
         urlIndex++;
-        setTimeout(tryNextUrl, 500);
+        setTimeout(tryNextUrl, 1000);
       }
     });
     
     proxyReq.on('timeout', () => {
-      console.error(`⏱️ Proxy timeout for URL ${urlIndex + 1}`);
+      console.error(`⏱️ Proxy connection timeout for URL ${urlIndex + 1}`);
       proxyReq.destroy();
       if (!responseHandled) {
         urlIndex++;
-        setTimeout(tryNextUrl, 500);
+        setTimeout(tryNextUrl, 1000);
       }
     });
     
@@ -225,10 +285,11 @@ app.get('/proxy/:fileId', (req, res) => {
 app.get('/proxy-test/:fileId', (req, res) => {
   const fileId = req.params.fileId;
   res.json({
-    status: 'Proxy endpoint ready',
+    status: 'Large file proxy ready',
     fileId: fileId,
     proxyUrl: `/proxy/${fileId}`,
     timestamp: new Date().toISOString(),
+    features: ['large-file-streaming', 'progress-tracking', '10min-timeout'],
     testUrls: [
       `https://drive.google.com/uc?export=download&id=${fileId}`,
       `https://drive.usercontent.google.com/download?id=${fileId}&export=download`
@@ -248,7 +309,7 @@ app.get('/health', (req, res) => {
     uptime: Math.floor(process.uptime()),
     memory: process.memoryUsage(),
     timestamp: new Date().toISOString(),
-    features: ['proxy', 'websockets', 'chat']
+    features: ['large-file-proxy', 'websockets', 'chat', 'progress-tracking']
   });
 });
 
@@ -396,27 +457,35 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000);
 
-// Start server
+// Start server with enhanced configuration for large files
 const PORT = process.env.PORT || 10000;
 
-// Configure server timeouts for video streaming
-server.keepAliveTimeout = 120000; // 120 seconds
-server.headersTimeout = 120000;   // 120 seconds
+// Configure server timeouts for large file streaming
+server.keepAliveTimeout = 600000; // 10 minutes
+server.headersTimeout = 600000;   // 10 minutes
+server.requestTimeout = 600000;   // 10 minutes
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`🎬 Movie Sync Server Started`);
   console.log(`🌐 Host: 0.0.0.0:${PORT}`);
   console.log(`📁 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🔧 Features: WebSocket, Chat, Google Drive Proxy`);
+  console.log(`🔧 Features: Large File Streaming, WebSocket, Chat, Progress Tracking`);
   console.log(`⏰ Started at: ${new Date().toLocaleString()}`);
+  console.log(`📊 Timeouts: 10 minutes for large file streaming`);
 });
 
-// Add error handling
+// Enhanced error handling
 server.on('error', (error) => {
   console.error('🔥 Server error:', error);
   if (error.code === 'EADDRINUSE') {
     console.log(`❌ Port ${PORT} is already in use`);
   }
+});
+
+// Handle client errors
+server.on('clientError', (err, socket) => {
+  console.error('🔥 Client error:', err.message);
+  socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
 });
 
 // Graceful shutdown handling
@@ -434,4 +503,15 @@ process.on('SIGINT', () => {
     console.log('✅ Server closed');
     process.exit(0);
   });
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (err) => {
+  console.error('🔥 Uncaught Exception:', err);
+  console.log('Server will continue running');
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('🔥 Unhandled Rejection at:', promise, 'reason:', reason);
+  console.log('Server will continue running');
 });
