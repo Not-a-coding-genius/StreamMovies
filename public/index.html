@@ -616,10 +616,26 @@
       }
     }
 
-    function extractGoogleDriveId(url) {
-      const match = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
-      return match ? match[1] : null;
-    }
+  // Replace your existing extractGoogleDriveId function with this:
+  function extractGoogleDriveId(url) {
+    // Handle different Google Drive URL formats
+    let match;
+    
+    // Format 1: /file/d/FILE_ID/view (share URLs)
+    match = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+    if (match) return match[1];
+    
+    // Format 2: /uc?export=download&id=FILE_ID (direct URLs)
+    match = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+    if (match) return match[1];
+    
+    // Format 3: docs.google.com/uc?export=download&id=FILE_ID
+    match = url.match(/docs\.google\.com\/uc\?export=download&id=([a-zA-Z0-9_-]+)/);
+    if (match) return match[1];
+    
+    return null;
+  }
+
 
     function createDirectUrl(fileId) {
       return `https://drive.google.com/uc?export=download&id=${fileId}`;
@@ -635,13 +651,18 @@
 
       const fileId = extractGoogleDriveId(url);
       if (!fileId) {
-        showToast('Invalid Google Drive URL format', 'error');
+        showToast('Invalid URL. Please use a Google Drive link.', 'error');
         return;
       }
 
-      const directUrl = createDirectUrl(fileId);
+      // Always use the direct download format
+      const directUrl = `https://docs.google.com/uc?export=download&id=${fileId}`;
+      console.log(`File ID extracted: ${fileId}`);
+      console.log(`Using direct URL: ${directUrl}`);
+      
       loadMovie(directUrl, url);
     }
+
 
     function loadMovie(url, originalUrl) {
       updateStatus('Loading movie...', 'syncing');
