@@ -36,7 +36,7 @@ let movieRoom = {
   movieUrl: process.env.MOVIE_URL || ""
 };
 
-// Google Drive Proxy Route - LARGE FILE STREAMING VERSION
+// Google Drive Proxy Route - WITH RANGE REQUEST SUPPORT FOR VIDEO SEEKING
 app.get('/proxy/:fileId', (req, res) => {
   const fileId = req.params.fileId;
   
@@ -48,6 +48,10 @@ app.get('/proxy/:fileId', (req, res) => {
   ];
   
   console.log(`🔄 Proxying Google Drive file: ${fileId}`);
+  
+  // Extract Range header from client request for video seeking
+  const range = req.headers.range;
+  console.log(`📊 Range request: ${range || 'No range (full file)'}`);
   
   // Set CORS headers
   res.header('Access-Control-Allow-Origin', '*');
@@ -87,18 +91,28 @@ app.get('/proxy/:fileId', (req, res) => {
     console.log(`Trying proxy URL ${urlIndex + 1}/${urls.length}: ${currentUrl}`);
     
     const urlObj = new URL(currentUrl);
+    
+    // Build headers - INCLUDE RANGE HEADER for video seeking
+    const proxyHeaders = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+      'Accept': 'video/*,*/*;q=0.9',
+      'Accept-Encoding': 'identity',
+      'Connection': 'keep-alive',
+      'Cache-Control': 'no-cache'
+    };
+    
+    // CRITICAL: Forward the Range header to Google Drive for seeking
+    if (range) {
+      proxyHeaders['Range'] = range;
+      console.log(`🎯 Forwarding range: ${range}`);
+    }
+    
     const options = {
       hostname: urlObj.hostname,
       path: urlObj.pathname + urlObj.search,
       method: 'GET',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Accept': 'video/*,*/*;q=0.9',
-        'Accept-Encoding': 'identity',
-        'Connection': 'keep-alive',
-        'Cache-Control': 'no-cache'
-      },
-      timeout: 60000 // 60 seconds for connection
+      headers: proxyHeaders,
+      timeout: 60000
     };
     
     const protocol = urlObj.protocol === 'https:' ? https : http;
@@ -108,44 +122,59 @@ app.get('/proxy/:fileId', (req, res) => {
       
       console.log(`Proxy response: ${proxyRes.statusCode} for URL ${urlIndex + 1}`);
       
-      if (proxyRes.statusCode === 200) {
-        console.log(`✅ Proxy success for file: ${fileId} using URL ${urlIndex + 1}`);
+      // Handle both 200 (full content) and 206 (partial content) responses
+      if (proxyRes.statusCode === 200 || proxyRes.statusCode === 206) {
+        console.log(`✅ Proxy success for file: ${fileId} using URL ${urlIndex + 1} (${proxyRes.statusCode})`);
         
         if (!responseHandled) {
           responseHandled = true;
           
-          // Headers for large file streaming
-          const headers = {
-            'Content-Type': proxyRes.headers['content-type'] || 'video/mp4',
+          // Build response headers
+          const responseHeaders = {
             'Access-Control-Allow-Origin': '*',
             'Accept-Ranges': 'bytes',
             'Cache-Control': 'public, max-age=86400'
           };
           
-          // Include content length if available
-          if (proxyRes.headers['content-length']) {
-            headers['Content-Length'] = proxyRes.headers['content-length'];
-            console.log(`📏 File size: ${Math.round(proxyRes.headers['content-length'] / 1024 / 1024)}MB`);
+          // Copy important headers from Google Drive response
+          if (proxyRes.headers['content-type']) {
+            responseHeaders['Content-Type'] = proxyRes.headers['content-type'];
           }
           
-          res.writeHead(200, headers);
+          if (proxyRes.headers['content-length']) {
+            responseHeaders['Content-Length'] = proxyRes.headers['content-length'];
+            console.log(`📏 Content length: ${Math.round(proxyRes.headers['content-length'] / 1024 / 1024)}MB`);
+          }
           
-          // Handle large file streaming
+          // CRITICAL: Forward Content-Range header for video seeking
+          if (proxyRes.headers['content-range']) {
+            responseHeaders['Content-Range'] = proxyRes.headers['content-range'];
+            console.log(`🎯 Content-Range: ${proxyRes.headers['content-range']}`);
+          }
+          
+          // Use the same status code as Google Drive (200 or 206)
+          res.writeHead(proxyRes.statusCode, responseHeaders);
+          
+          // Handle streaming with progress tracking
           let bytesStreamed = 0;
           const startTime = Date.now();
           
           proxyRes.on('data', (chunk) => {
             bytesStreamed += chunk.length;
             
-            // Log progress every 10MB
-            if (bytesStreamed % (10 * 1024 * 1024) < chunk.length) {
+            // Log progress every 10MB for full downloads only
+            if (!range && bytesStreamed % (10 * 1024 * 1024) < chunk.length) {
               console.log(`📊 Streamed ${Math.round(bytesStreamed / 1024 / 1024)}MB for ${fileId}`);
             }
           });
           
           proxyRes.on('end', () => {
             const duration = (Date.now() - startTime) / 1000;
-            console.log(`✅ Streaming completed: ${fileId} (${Math.round(bytesStreamed / 1024 / 1024)}MB in ${duration}s)`);
+            if (range) {
+              console.log(`✅ Range request completed: ${fileId} (${range}) in ${duration}s`);
+            } else {
+              console.log(`✅ Full streaming completed: ${fileId} (${Math.round(bytesStreamed / 1024 / 1024)}MB in ${duration}s)`);
+            }
           });
           
           proxyRes.on('error', (err) => {
@@ -160,20 +189,31 @@ app.get('/proxy/:fileId', (req, res) => {
         }
         
       } else if (proxyRes.statusCode >= 300 && proxyRes.statusCode < 400) {
+        // Handle redirects
         const redirectUrl = proxyRes.headers.location;
         if (redirectUrl && !responseHandled) {
           console.log(`🔄 Redirecting to: ${redirectUrl}`);
           
           const redirectUrlObj = new URL(redirectUrl);
+          
+          // Build redirect headers - INCLUDE RANGE HEADER for seeking
+          const redirectHeaders = {
+            'User-Agent': proxyHeaders['User-Agent'],
+            'Accept': proxyHeaders['Accept'],
+            'Cache-Control': 'no-cache'
+          };
+          
+          // CRITICAL: Forward the Range header to redirect URL for seeking
+          if (range) {
+            redirectHeaders['Range'] = range;
+            console.log(`🎯 Forwarding range to redirect: ${range}`);
+          }
+          
           const redirectOptions = {
             hostname: redirectUrlObj.hostname,
             path: redirectUrlObj.pathname + redirectUrlObj.search,
             method: 'GET',
-            headers: {
-              'User-Agent': options.headers['User-Agent'],
-              'Accept': options.headers['Accept'],
-              'Cache-Control': 'no-cache'
-            },
+            headers: redirectHeaders,
             timeout: 60000
           };
           
@@ -182,25 +222,37 @@ app.get('/proxy/:fileId', (req, res) => {
           const redirectReq = redirectProtocol.request(redirectOptions, (redirectRes) => {
             if (responseHandled) return;
             
-            if (redirectRes.statusCode === 200) {
-              console.log(`✅ Redirect success for file: ${fileId}`);
+            // Handle both 200 and 206 for redirects
+            if (redirectRes.statusCode === 200 || redirectRes.statusCode === 206) {
+              console.log(`✅ Redirect success for file: ${fileId} (${redirectRes.statusCode})`);
               
               if (!responseHandled) {
                 responseHandled = true;
                 
-                const redirectHeaders = {
-                  'Content-Type': redirectRes.headers['content-type'] || 'video/mp4',
+                const redirectResponseHeaders = {
                   'Access-Control-Allow-Origin': '*',
                   'Accept-Ranges': 'bytes',
                   'Cache-Control': 'public, max-age=86400'
                 };
                 
-                if (redirectRes.headers['content-length']) {
-                  redirectHeaders['Content-Length'] = redirectRes.headers['content-length'];
-                  console.log(`📏 Redirect file size: ${Math.round(redirectRes.headers['content-length'] / 1024 / 1024)}MB`);
+                // Copy headers from Google Drive redirect response
+                if (redirectRes.headers['content-type']) {
+                  redirectResponseHeaders['Content-Type'] = redirectRes.headers['content-type'];
                 }
                 
-                res.writeHead(200, redirectHeaders);
+                if (redirectRes.headers['content-length']) {
+                  redirectResponseHeaders['Content-Length'] = redirectRes.headers['content-length'];
+                  console.log(`📏 Redirect content length: ${Math.round(redirectRes.headers['content-length'] / 1024 / 1024)}MB`);
+                }
+                
+                // CRITICAL: Forward Content-Range header for video seeking
+                if (redirectRes.headers['content-range']) {
+                  redirectResponseHeaders['Content-Range'] = redirectRes.headers['content-range'];
+                  console.log(`🎯 Redirect Content-Range: ${redirectRes.headers['content-range']}`);
+                }
+                
+                // Use the same status code as Google Drive redirect (200 or 206)
+                res.writeHead(redirectRes.statusCode, redirectResponseHeaders);
                 
                 // Handle redirect streaming with progress
                 let redirectBytesStreamed = 0;
@@ -209,15 +261,19 @@ app.get('/proxy/:fileId', (req, res) => {
                 redirectRes.on('data', (chunk) => {
                   redirectBytesStreamed += chunk.length;
                   
-                  // Log progress every 10MB
-                  if (redirectBytesStreamed % (10 * 1024 * 1024) < chunk.length) {
+                  // Log progress for full downloads only
+                  if (!range && redirectBytesStreamed % (10 * 1024 * 1024) < chunk.length) {
                     console.log(`📊 Redirect streamed ${Math.round(redirectBytesStreamed / 1024 / 1024)}MB for ${fileId}`);
                   }
                 });
                 
                 redirectRes.on('end', () => {
                   const redirectDuration = (Date.now() - redirectStartTime) / 1000;
-                  console.log(`✅ Redirect streaming completed: ${fileId} (${Math.round(redirectBytesStreamed / 1024 / 1024)}MB in ${redirectDuration}s)`);
+                  if (range) {
+                    console.log(`✅ Redirect range completed: ${fileId} (${range}) in ${redirectDuration}s`);
+                  } else {
+                    console.log(`✅ Redirect full streaming completed: ${fileId} (${Math.round(redirectBytesStreamed / 1024 / 1024)}MB in ${redirectDuration}s)`);
+                  }
                 });
                 
                 redirectRes.on('error', (err) => {
@@ -285,11 +341,11 @@ app.get('/proxy/:fileId', (req, res) => {
 app.get('/proxy-test/:fileId', (req, res) => {
   const fileId = req.params.fileId;
   res.json({
-    status: 'Large file proxy ready',
+    status: 'Range-enabled proxy ready',
     fileId: fileId,
     proxyUrl: `/proxy/${fileId}`,
     timestamp: new Date().toISOString(),
-    features: ['large-file-streaming', 'progress-tracking', '10min-timeout'],
+    features: ['range-requests', 'video-seeking', 'large-file-streaming', 'progress-tracking'],
     testUrls: [
       `https://drive.google.com/uc?export=download&id=${fileId}`,
       `https://drive.usercontent.google.com/download?id=${fileId}&export=download`
@@ -309,7 +365,7 @@ app.get('/health', (req, res) => {
     uptime: Math.floor(process.uptime()),
     memory: process.memoryUsage(),
     timestamp: new Date().toISOString(),
-    features: ['large-file-proxy', 'websockets', 'chat', 'progress-tracking']
+    features: ['range-requests', 'video-seeking', 'large-file-proxy', 'websockets', 'chat', 'progress-tracking']
   });
 });
 
@@ -457,10 +513,10 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000);
 
-// Start server with enhanced configuration for large files
+// Start server with enhanced configuration for video streaming
 const PORT = process.env.PORT || 10000;
 
-// Configure server timeouts for large file streaming
+// Configure server timeouts for large file streaming and range requests
 server.keepAliveTimeout = 600000; // 10 minutes
 server.headersTimeout = 600000;   // 10 minutes
 server.requestTimeout = 600000;   // 10 minutes
@@ -469,9 +525,9 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`🎬 Movie Sync Server Started`);
   console.log(`🌐 Host: 0.0.0.0:${PORT}`);
   console.log(`📁 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🔧 Features: Large File Streaming, WebSocket, Chat, Progress Tracking`);
+  console.log(`🔧 Features: Range Requests, Video Seeking, Large File Streaming, WebSocket, Chat`);
   console.log(`⏰ Started at: ${new Date().toLocaleString()}`);
-  console.log(`📊 Timeouts: 10 minutes for large file streaming`);
+  console.log(`📊 Timeouts: 10 minutes for large file streaming and seeking`);
 });
 
 // Enhanced error handling
