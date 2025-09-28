@@ -194,12 +194,21 @@ setInterval(() => {
 }, 5 * 60 * 1000);
 
 // Start server
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
+const PORT = process.env.PORT || 10000;  // Render uses 10000, not 3000
+
+server.listen(PORT, '0.0.0.0', () => {   // MUST bind to 0.0.0.0
   console.log(`🎬 Movie Sync Server Started`);
-  console.log(`🌐 Local: http://localhost:${PORT}`);
-  console.log(`📁 Serving from: ${path.join(__dirname, 'public')}`);
+  console.log(`🌐 Host: 0.0.0.0:${PORT}`);
+  console.log(`📁 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`⏰ Started at: ${new Date().toLocaleString()}`);
+});
+
+// Add error handling
+server.on('error', (error) => {
+  console.error('🔥 Server error:', error);
+  if (error.code === 'EADDRINUSE') {
+    console.log(`❌ Port ${PORT} is already in use`);
+  }
 });
 
 // Graceful shutdown handling
