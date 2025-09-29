@@ -79,7 +79,20 @@ const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 * 1024 } })
 
 // Basic middleware
 app.use(express.json());
+
+// Enhanced CORS middleware for video streaming
 app.use((req, res, next) => {
+  // Set CORS headers for all requests
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, HEAD, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Range, Content-Type, Authorization, X-Requested-With');
+  res.header('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
+  
+  // Handle OPTIONS preflight requests
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  
   console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
   next();
 });
@@ -207,7 +220,18 @@ async function streamViaDriveApi(fileId, rangeHeader, res) {
     const ctype = apiResp.headers['content-type'] || 'video/mp4';
     if (apiResp.headers['content-range']) res.status(206).set('Content-Range', apiResp.headers['content-range']);
     if (apiResp.headers['content-length']) res.set('Content-Length', apiResp.headers['content-length']);
-    res.set({ 'Content-Type': ctype, 'Accept-Ranges': 'bytes', 'X-Proxy-Source': 'drive_api' });
+    
+    // Set comprehensive headers for video streaming
+    res.set({ 
+      'Content-Type': ctype, 
+      'Accept-Ranges': 'bytes', 
+      'X-Proxy-Source': 'drive_api',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+      'Access-Control-Allow-Headers': 'Range, Content-Type, Authorization',
+      'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges',
+      'Cache-Control': 'public, max-age=3600'
+    });
     
     let bytesStreamed = 0;
     apiResp.data.on('data', (chunk) => {
@@ -266,6 +290,14 @@ app.get('/proxy/:fileId', async (req, res) => {
   
   console.log(`🔄 Proxy request fileId=${fileId} range=${range || 'none'}`);
   const primaryMode = (process.env.DRIVE_PRIMARY_MODE || 'api').toLowerCase(); // 'api' | 'html'
+
+  // Set basic CORS headers early
+  res.set({
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+    'Access-Control-Allow-Headers': 'Range, Content-Type, Authorization',
+    'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges'
+  });
 
   // Helper to run HTML confirm flow
   const runHtmlFlow = async () => {
@@ -368,11 +400,33 @@ app.get('/proxy-api/:fileId', async (req, res) => {
   const range = req.headers.range;
   try { await ensureServiceAccountMaterialized(); } catch(e) {}
   if (!(process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.GOOGLE_SERVICE_ACCOUNT_JSON || process.env.DRIVE_SA_JSON)) {
+    console.error('❌ No Google credentials available for streaming');
     return res.status(400).json({ error: 'no_credentials', detail: 'Provide GOOGLE_SERVICE_ACCOUNT_JSON inline or GOOGLE_APPLICATION_CREDENTIALS path' });
   }
+  
+  console.log(`🚀 Attempting Drive API streaming for ${fileId}`);
   const ok = await streamViaDriveApi(fileId, range, res);
+  
   if (!ok && !res.headersSent) {
-    res.status(502).json({ error: 'drive_api_failed', hint: '401 usually means file not shared with service account or scope missing' });
+    console.error(`❌ Drive API streaming failed for ${fileId}, falling back to HTML flow`);
+    try {
+      const htmlResult = await runHtmlFlow();
+      if (!htmlResult) {
+        console.error('❌ HTML fallback also failed');
+        res.status(502).json({ 
+          error: 'all_methods_failed', 
+          detail: 'Both Drive API and HTML confirm flow failed',
+          fileId: fileId
+        });
+      }
+    } catch (error) {
+      console.error('❌ HTML fallback error:', error.message);
+      res.status(502).json({ 
+        error: 'fallback_failed', 
+        detail: error.message,
+        fileId: fileId
+      });
+    }
   }
 });
 
