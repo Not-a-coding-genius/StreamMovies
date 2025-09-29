@@ -1346,11 +1346,54 @@
         return;
       }
       
-      // Set the source for Video.js
+      console.log('🎬 Loading movie:', url);
+      
+      // Clear any existing source
+      try {
+        player.src([]);
+        player.load();
+      } catch(e) {
+        console.warn('Error clearing player:', e);
+      }
+      
+      // Add loading timeout
+      const loadingTimeout = setTimeout(() => {
+        console.warn('⚠️ Video loading timeout - trying alternative approach');
+        showToast('Loading taking longer than expected...', 'warning');
+      }, 15000);
+      
+      // Set the source for Video.js with enhanced options
       player.src({
         src: url,
-        type: 'video/mp4' // Video.js will auto-detect if needed
+        type: 'video/mp4'
       });
+      
+      // Enhanced ready handling
+      const onReady = () => {
+        clearTimeout(loadingTimeout);
+        console.log('✅ Video source set successfully');
+        updateStatus('Movie loaded', 'ready');
+      };
+      
+      const onError = (error) => {
+        clearTimeout(loadingTimeout);
+        console.error('❌ Video loading error:', error);
+        showToast('Failed to load video. Retrying...', 'error');
+        
+        // Retry with different approach after 3 seconds
+        setTimeout(() => {
+          console.log('🔄 Retrying video load...');
+          try {
+            player.load();
+          } catch(e) {
+            console.error('Retry failed:', e);
+          }
+        }, 3000);
+      };
+      
+      // Set up one-time event listeners
+      player.one('loadstart', onReady);
+      player.one('error', onError);
       
       // Handle subtitle file if uploaded
       const subtitleInput = document.getElementById('subtitleInput');

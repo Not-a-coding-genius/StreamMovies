@@ -195,7 +195,9 @@ async function streamViaDriveApi(fileId, rangeHeader, res) {
       headers: { ...headers, Authorization: `Bearer ${token}` },
       responseType: 'stream',
       validateStatus: s => [200,206].includes(s),
-      timeout: 30000 // 30 second timeout
+      timeout: 60000, // Increased to 60 seconds for large files
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity
     });
     
     console.log(`✅ Drive API: Response status=${apiResp.status}, content-type=${apiResp.headers['content-type']}`);
@@ -244,7 +246,24 @@ async function streamViaDriveApi(fileId, rangeHeader, res) {
 
 app.get('/proxy/:fileId', async (req, res) => {
   const { fileId } = req.params;
-  const range = req.headers.range;
+  let range = req.headers.range;
+  
+  // Optimize range requests for better streaming on Render
+  if (range && range.includes('-')) {
+    const match = range.match(/bytes=(\d+)-(\d*)/);
+    if (match) {
+      const start = parseInt(match[1]);
+      const end = match[2] ? parseInt(match[2]) : undefined;
+      
+      // If no end specified or range is too large, limit initial chunk size
+      if (!end || (end - start) > 10 * 1024 * 1024) { // 10MB limit
+        const limitedEnd = start + (5 * 1024 * 1024) - 1; // 5MB chunks
+        range = `bytes=${start}-${limitedEnd}`;
+        console.log(`🔧 Range limited from ${req.headers.range} to ${range}`);
+      }
+    }
+  }
+  
   console.log(`🔄 Proxy request fileId=${fileId} range=${range || 'none'}`);
   const primaryMode = (process.env.DRIVE_PRIMARY_MODE || 'api').toLowerCase(); // 'api' | 'html'
 
