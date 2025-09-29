@@ -367,11 +367,34 @@ app.get('/auth-status', async (req, res) => {
   const filePath = process.env.GOOGLE_APPLICATION_CREDENTIALS || null;
   let fileExists = false;
   if (filePath) { try { fileExists = fs.existsSync(filePath); } catch(e) {} }
+  
+  // Additional debugging for Render deployment
+  const envVarExists = !!process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  const envVarLength = process.env.GOOGLE_SERVICE_ACCOUNT_JSON ? process.env.GOOGLE_SERVICE_ACCOUNT_JSON.length : 0;
+  let envVarValid = false;
+  
+  if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
+    try {
+      const parsed = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
+      envVarValid = !!(parsed.private_key && parsed.client_email);
+    } catch (e) {
+      envVarValid = false;
+    }
+  }
+  
   res.json({
     inlineProvided: inline,
     credentialFilePathSet: !!filePath,
     credentialFileExists: fileExists,
-    readyForDriveApi: inline || (filePath && fileExists)
+    readyForDriveApi: inline || (filePath && fileExists),
+    // Render debugging
+    renderDeployment: {
+      envVarExists,
+      envVarLength,
+      envVarValid,
+      hasPrivateKey: envVarExists && process.env.GOOGLE_SERVICE_ACCOUNT_JSON.includes('private_key'),
+      hasClientEmail: envVarExists && process.env.GOOGLE_SERVICE_ACCOUNT_JSON.includes('client_email')
+    }
   });
 });
 
@@ -386,6 +409,24 @@ app.get('/auth-debug', async (req, res) => {
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
+});
+
+// Test endpoint for Render deployment debugging
+app.get('/render-test', (req, res) => {
+  const hasJsonEnv = !!process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  const hasUser1 = !!process.env.LOGIN_USER1;
+  const hasPass1 = !!process.env.LOGIN_PASS1;
+  
+  res.json({
+    status: 'render_test',
+    environment: {
+      googleServiceAccount: hasJsonEnv ? 'present' : 'missing',
+      loginUser1: hasUser1 ? process.env.LOGIN_USER1 : 'missing',
+      loginPass1: hasPass1 ? 'present' : 'missing',
+      port: process.env.PORT || 'not_set'
+    },
+    timestamp: new Date().toISOString()
+  });
 });
 
 // Permissions listing route

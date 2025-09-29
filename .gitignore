@@ -1,5 +1,6 @@
 .env
 .env.*
+.env.render
 !*.example
 # Dependencies
 node_modules/
