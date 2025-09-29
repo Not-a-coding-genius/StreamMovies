@@ -593,6 +593,36 @@ app.get('/drive-test/:fileId', async (req, res) => {
   }
 });
 
+// Simple stream test endpoint
+app.get('/stream-test/:fileId', async (req, res) => {
+  const { fileId } = req.params;
+  const range = req.headers.range || 'bytes=0-1048575'; // 1MB test
+  
+  console.log(`🧪 Stream test for ${fileId}, range: ${range}`);
+  
+  try {
+    const success = await streamViaDriveApi(fileId, range, res);
+    if (!success && !res.headersSent) {
+      res.status(500).json({ 
+        error: 'stream_test_failed', 
+        fileId,
+        range,
+        message: 'Stream test did not complete successfully'
+      });
+    }
+  } catch (error) {
+    console.error(`❌ Stream test failed:`, error);
+    if (!res.headersSent) {
+      res.status(500).json({ 
+        error: 'stream_test_exception', 
+        fileId,
+        range,
+        message: error.message
+      });
+    }
+  }
+});
+
 // Permissions listing route
 app.get('/drive-file-perms/:fileId', async (req, res) => {
   const { fileId } = req.params;
