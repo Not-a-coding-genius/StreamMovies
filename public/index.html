@@ -1348,6 +1348,28 @@
       
       console.log('🎬 Loading movie:', url);
       
+      // Debug: Check if URL is accessible before giving it to Video.js
+      console.log('🧪 Testing URL accessibility...');
+      fetch(url, { 
+        method: 'HEAD',
+        mode: 'cors'
+      }).then(response => {
+        console.log('✅ HEAD request successful:', response.status, response.headers);
+        console.log('📋 Response headers:', Object.fromEntries(response.headers.entries()));
+        
+        // Also test a small range request
+        return fetch(url, {
+          method: 'GET',
+          headers: { 'Range': 'bytes=0-1023' },
+          mode: 'cors'
+        });
+      }).then(response => {
+        console.log('✅ Range GET request successful:', response.status);
+        console.log('📋 Range response headers:', Object.fromEntries(response.headers.entries()));
+      }).catch(error => {
+        console.error('❌ Request failed:', error);
+      });
+      
       // Clear any existing source
       try {
         player.src([]);
@@ -1362,25 +1384,22 @@
         showToast('Loading taking longer than expected...', 'warning');
       }, 15000);
       
-      // Set the source for Video.js with enhanced options
-      const sourceConfig = {
-        src: url,
-        type: 'video/mp4',
-        // Add CORS configuration
-        crossOrigin: 'anonymous',
-        withCredentials: false
-      };
+      // Set the source for Video.js - simplified approach
+      console.log('🎬 Setting video source (simplified):', url);
       
-      console.log('🎬 Setting video source:', sourceConfig);
-      player.src(sourceConfig);
+      // Method 1: Try direct src assignment
+      player.src(url);
       
-      // Force load the video
-      try {
-        player.load();
-        console.log('🔄 Player.load() called');
-      } catch(e) {
-        console.warn('Player.load() failed:', e);
-      }
+      // Method 2: If that doesn't work, try explicit source object
+      setTimeout(() => {
+        if (player.readyState() === 0) {
+          console.log('🔄 Trying alternative source method...');
+          player.src([{
+            src: url,
+            type: 'video/mp4'
+          }]);
+        }
+      }, 2000);
       
       // Enhanced ready handling  
       const onLoadStart = () => {
@@ -1562,25 +1581,13 @@ If a video fails to load, the app will automatically try multiple URL formats to
           fluid: true,
           responsive: true,
           playbackRates: [0.5, 1, 1.25, 1.5, 2],
-          preload: 'metadata',
-          plugins: {},
+          preload: 'auto',
           techOrder: ['html5'],
           html5: {
             vhs: {
               overrideNative: !videojs.browser.IS_SAFARI
-            },
-            nativeVideoTracks: false,
-            nativeAudioTracks: false,
-            nativeTextTracks: false,
-            crossOrigin: 'anonymous'
-          },
-          // Enhanced source options for better streaming
-          sources: [],
-          // Better error handling
-          inactivityTimeout: 0,
-          // Network optimizations
-          bandwidth: 5000000, // 5Mbps default
-          enableSourceSelection: true
+            }
+          }
         });
 
         // Wait for player to be ready

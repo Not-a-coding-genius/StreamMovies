@@ -93,6 +93,12 @@ app.use((req, res, next) => {
     return res.status(200).end();
   }
   
+  // Enhanced logging for proxy requests
+  if (req.url.includes('/proxy')) {
+    console.log(`🔍 PROXY REQUEST: ${req.method} ${req.url}`);
+    console.log(`🔍 Headers: Range=${req.headers.range || 'none'}, User-Agent=${req.headers['user-agent']?.substring(0,50)}...`);
+  }
+  
   console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
   next();
 });
