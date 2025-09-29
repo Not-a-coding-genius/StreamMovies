@@ -1,3 +1,6 @@
+.env
+.env.*
+!*.example
 # Dependencies
 node_modules/
 npm-debug.log*
@@ -16,6 +19,10 @@ pids
 .env.development.local
 .env.test.local
 .env.production.local
+
+# Google Service Account Keys (NEVER commit these!)
+*.json
+!package.json
 
 # Logs
 logs

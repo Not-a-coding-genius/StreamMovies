@@ -5,7 +5,157 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>🎬 Movie Sync - Watch Together</title>
   <script src="/socket.io/socket.io.js"></script>
+  <!-- Inline favicon to avoid 404 for /favicon.ico -->
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' ry='12' fill='%23667eea'/%3E%3Ctext x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' font-size='34' font-family='Segoe UI, Arial, sans-serif' fill='white'%3E🎬%3C/text%3E%3C/svg%3E" />
+  
+  <!-- Video.js CSS and JS -->
+  <link href="https://vjs.zencdn.net/8.6.1/video-js.css" rel="stylesheet">
+  <script src="https://vjs.zencdn.net/8.6.1/video.min.js"></script>
+  
   <style>
+    /* Login Page Styles */
+    .login-container {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(135deg, var(--bg-primary), var(--bg-secondary));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      transition: opacity 0.5s ease, visibility 0.5s ease;
+    }
+    
+    .login-container.hidden {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+    
+    .login-card {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      padding: 3rem;
+      box-shadow: var(--shadow-lg);
+      width: 100%;
+      max-width: 400px;
+      text-align: center;
+    }
+    
+    .login-card h1 {
+      font-size: 2.5rem;
+      font-weight: 800;
+      margin-bottom: 0.5rem;
+      background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    
+    .login-card p {
+      color: var(--text-secondary);
+      margin-bottom: 2rem;
+      font-size: 1.1rem;
+    }
+    
+    .login-form {
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+    
+    .login-input {
+      padding: 1rem 1.5rem;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      color: var(--text-primary);
+      font-size: 1rem;
+      transition: var(--transition);
+    }
+    
+    .login-input::placeholder {
+      color: var(--text-muted);
+    }
+    
+    .login-input:focus {
+      outline: none;
+      border-color: var(--accent-primary);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+    }
+    
+    .login-button {
+      padding: 1rem 2rem;
+      background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+      color: white;
+      border: none;
+      border-radius: var(--radius-md);
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: var(--transition);
+    }
+    
+    .login-button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 25px rgba(99, 102, 241, 0.3);
+    }
+    
+    .login-button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+    
+    .login-error {
+      color: var(--danger);
+      font-size: 0.9rem;
+      margin-top: 1rem;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+    
+    .login-error.show {
+      opacity: 1;
+    }
+    
+    .main-app {
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.5s ease, visibility 0.5s ease;
+    }
+    
+    .main-app.show {
+      opacity: 1;
+      visibility: visible;
+    }
+
+    :root {
+      --bg-primary: #0a0a0f;
+      --bg-secondary: #1a1a24;
+      --bg-tertiary: #252533;
+      --border-color: #3a3a4a;
+      --text-primary: #ffffff;
+      --text-secondary: #b0b0c4;
+      --text-muted: #808090;
+      --accent-primary: #6366f1;
+      --accent-secondary: #818cf8;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.12);
+      --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.15);
+      --shadow-lg: 0 10px 25px rgba(0, 0, 0, 0.25);
+      --radius-sm: 8px;
+      --radius-md: 12px;
+      --radius-lg: 16px;
+      --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
     * {
       margin: 0;
       padding: 0;
@@ -13,64 +163,109 @@
     }
     
     body {
-      font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: white;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
       min-height: 100vh;
       display: flex;
       flex-direction: column;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
     }
     
     .container {
-      max-width: 1200px;
+      max-width: 1600px;
       margin: 0 auto;
-      padding: 20px;
+      padding: 2rem 1.5rem;
       flex: 1;
     }
     
     .header {
       text-align: center;
-      margin-bottom: 30px;
-      padding: 20px 0;
+      margin-bottom: 3rem;
+      padding: 2rem 0;
     }
     
     .header h1 {
-      font-size: 2.8rem;
-      margin-bottom: 10px;
-      text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+      font-size: clamp(2.5rem, 5vw, 3.5rem);
+      font-weight: 800;
+      margin-bottom: 1rem;
+      background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+      letter-spacing: -0.025em;
     }
     
     .header p {
-      font-size: 1.2rem;
-      opacity: 0.9;
-      margin-bottom: 20px;
+      font-size: 1.25rem;
+      color: var(--text-secondary);
+      font-weight: 400;
+      max-width: 600px;
+      margin: 0 auto;
     }
     
-    /* Video Section */
+    /* Main Layout */
+    .main-content {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 2rem;
+      margin-bottom: 2rem;
+    }
+    
+    .left-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 2rem;
+    }
+    
+    .right-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 2rem;
+    }
     .video-section {
-      background: rgba(255,255,255,0.1);
-      backdrop-filter: blur(10px);
-      border-radius: 20px;
-      padding: 20px;
-      margin-bottom: 25px;
-      border: 1px solid rgba(255,255,255,0.2);
-      box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      padding: 2rem;
+      box-shadow: var(--shadow-lg);
     }
     
     .video-container {
       position: relative;
       width: 100%;
-      border-radius: 12px;
+      border-radius: var(--radius-md);
       overflow: hidden;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+      box-shadow: var(--shadow-md);
       background: #000;
     }
     
-    video {
+    .video-js {
       width: 100%;
       height: auto;
-      display: block;
-      min-height: 300px;
+      min-height: 500px;
+      font-family: inherit;
+    }
+    
+    .vjs-default-skin {
+      font-family: inherit;
+    }
+    
+    .video-js .vjs-big-play-button {
+      background-color: rgba(99, 102, 241, 0.9);
+      border: none;
+      border-radius: 50%;
+      width: 80px;
+      height: 80px;
+      margin-top: -40px;
+      margin-left: -40px;
+      transition: var(--transition);
+    }
+    
+    .video-js:hover .vjs-big-play-button {
+      background-color: var(--accent-primary);
+      transform: scale(1.05);
     }
     
     .video-overlay {
@@ -79,113 +274,188 @@
       left: 0;
       right: 0;
       bottom: 0;
-      background: rgba(0,0,0,0.9);
+      background: rgba(10, 10, 15, 0.95);
+      backdrop-filter: blur(10px);
       display: flex;
       align-items: center;
       justify-content: center;
       flex-direction: column;
       opacity: 0;
-      transition: opacity 0.3s ease;
+      visibility: hidden;
+      transition: opacity 0.3s ease, visibility 0.3s ease;
       z-index: 10;
+      padding: 3rem 2rem;
+      min-height: 500px;
+      pointer-events: none;
     }
     
     .video-overlay.show {
       opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
     }
     
     .video-overlay h3 {
-      font-size: 1.8rem;
-      margin-bottom: 15px;
+      font-size: 2rem;
+      font-weight: 700;
+      margin-bottom: 1rem;
       text-align: center;
+      color: var(--text-primary);
     }
     
     .video-overlay p {
-      margin-bottom: 20px;
+      margin-bottom: 2rem;
       text-align: center;
-      opacity: 0.8;
+      color: var(--text-secondary);
+      font-size: 1.1rem;
     }
     
-    .video-overlay input {
-      padding: 15px 20px;
-      font-size: 1rem;
-      border: 2px solid rgba(255,255,255,0.3);
-      border-radius: 10px;
-      margin: 10px;
-      width: 500px;
-      max-width: 90%;
-      background: rgba(255,255,255,0.1);
-      color: white;
-      backdrop-filter: blur(10px);
-    }
-    
-    .video-overlay input::placeholder {
-      color: rgba(255,255,255,0.7);
-    }
-    
-    .video-overlay button {
-      padding: 15px 25px;
-      font-size: 1rem;
-      background: linear-gradient(135deg, #4CAF50, #45a049);
-      color: white;
-      border: none;
-      border-radius: 10px;
-      cursor: pointer;
-      margin: 8px;
-      transition: all 0.3s ease;
+    .video-overlay input[type="text"] {
+      padding: 1.25rem 1.5rem;
+      font-size: 1.1rem;
+      border: 2px solid var(--border-color);
+      border-radius: var(--radius-md);
+      margin: 1rem 0;
+      width: 100%;
+      max-width: 700px;
+      background: var(--bg-tertiary);
+      color: var(--text-primary);
+      transition: var(--transition);
       font-weight: 500;
     }
     
-    .video-overlay button:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 6px 16px rgba(76, 175, 80, 0.4);
+    .video-overlay input[type="file"] {
+      padding: 0.75rem 1rem;
+      font-size: 0.95rem;
+      border: 2px solid var(--border-color);
+      border-radius: var(--radius-sm);
+      margin: 0.5rem 0;
+      width: 100%;
+      max-width: 400px;
+      background: var(--bg-tertiary);
+      color: var(--text-primary);
+      font-weight: 500;
     }
     
-    .video-overlay button.secondary {
-      background: linear-gradient(135deg, #2196F3, #1976D2);
+    .video-overlay input[type="file"]::file-selector-button {
+      background: var(--success);
+      color: white;
+      border: none;
+      border-radius: var(--radius-sm);
+      padding: 0.6rem 1.2rem;
+      margin-right: 1rem;
+      cursor: pointer;
+      font-size: 0.9rem;
+      font-weight: 600;
+      transition: var(--transition);
+    }
+    
+    .video-overlay input[type="file"]::file-selector-button:hover {
+      background: #059669;
+      transform: translateY(-1px);
+    }
+    
+    .subtitle-section {
+      margin: 2rem 0;
+      padding: 2rem;
+      background: rgba(40, 42, 54, 0.7); /* A slightly more visible, glassy background */
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: var(--radius-lg);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+      transition: var(--transition);
+      width: 100%;
+      max-width: 700px;
+    }
+    
+    .subtitle-section:hover {
+      background: rgba(45, 48, 65, 0.8);
+      border-color: rgba(255, 255, 255, 0.25);
+    }
+    
+    .subtitle-section p {
+      font-size: 1rem;
+      font-weight: 700;
+      margin-bottom: 1rem;
+      color: var(--text-primary);
+    }
+    
+    .video-overlay input::placeholder {
+      color: var(--text-muted);
+    }
+    
+    .video-overlay input:focus {
+      outline: none;
+      border-color: var(--accent-primary);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+    }
+    
+    .video-overlay button {
+      padding: 1rem 2rem !important;
+      font-size: 1rem !important;
+      font-weight: 600 !important;
+      color: white !important;
+      border-radius: var(--radius-md) !important;
+      cursor: pointer !important;
+      margin: 0.5rem !important;
+      transition: var(--transition) !important;
+      display: inline-flex !important;
+      align-items: center !important;
+      gap: 0.5rem !important;
+      min-height: 48px !important;
+      text-decoration: none !important;
+    }
+    
+    .video-overlay button:hover {
+      transform: translateY(-2px) !important;
+      opacity: 0.9 !important;
     }
     
     /* Controls Panel */
     .controls-panel {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      gap: 20px;
-      margin-bottom: 25px;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 1.5rem;
     }
     
     .control-card {
-      background: rgba(255,255,255,0.1);
-      backdrop-filter: blur(10px);
-      padding: 25px;
-      border-radius: 16px;
-      border: 1px solid rgba(255,255,255,0.2);
-      transition: transform 0.3s ease, box-shadow 0.3s ease;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      padding: 2rem;
+      border-radius: var(--radius-lg);
+      transition: var(--transition);
+      box-shadow: var(--shadow-md);
     }
     
     .control-card:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 12px 24px rgba(0,0,0,0.2);
+      transform: translateY(-4px);
+      box-shadow: var(--shadow-lg);
+      border-color: var(--accent-primary);
     }
     
     .control-card h3 {
-      margin-bottom: 20px;
-      font-size: 1.3rem;
+      margin-bottom: 1.5rem;
+      font-size: 1.4rem;
+      font-weight: 700;
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 0.75rem;
+      color: var(--text-primary);
     }
     
     .status-indicator {
       display: inline-block;
-      width: 14px;
-      height: 14px;
+      width: 12px;
+      height: 12px;
       border-radius: 50%;
-      margin-right: 10px;
+      margin-right: 0.75rem;
       animation: pulse 2s infinite;
     }
     
-    .status-connected { background: #4CAF50; }
-    .status-disconnected { background: #f44336; animation: none; }
-    .status-syncing { background: #ff9800; }
+    .status-connected { background: var(--success); }
+    .status-disconnected { background: var(--danger); animation: none; }
+    .status-syncing { background: var(--warning); }
     
     @keyframes pulse {
       0%, 100% { opacity: 1; }
@@ -196,9 +466,9 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin: 12px 0;
-      padding: 8px 0;
-      border-bottom: 1px solid rgba(255,255,255,0.1);
+      margin: 1rem 0;
+      padding: 0.75rem 0;
+      border-bottom: 1px solid var(--border-color);
       font-size: 1rem;
     }
     
@@ -206,160 +476,209 @@
       border-bottom: none;
     }
     
-    .stat-value {
+    .stat-row span:first-child {
+      color: var(--text-secondary);
       font-weight: 500;
+    }
+    
+    .stat-value {
+      font-weight: 600;
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 0.5rem;
+      color: var(--text-primary);
     }
     
     /* Button Groups */
     .button-group {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-      gap: 12px;
-      margin-top: 20px;
+      gap: 1rem;
+      margin-top: 1.5rem;
     }
     
     .btn {
-      padding: 14px 20px;
-      background: linear-gradient(135deg, #667eea, #764ba2);
-      color: white;
-      border: none;
-      border-radius: 10px;
+      padding: 1rem 1.5rem;
+      background: var(--bg-tertiary);
+      color: var(--text-primary);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
       cursor: pointer;
       font-size: 0.95rem;
-      font-weight: 500;
-      transition: all 0.3s ease;
+      font-weight: 600;
+      transition: var(--transition);
       display: flex;
       align-items: center;
       justify-content: center;
-      gap: 8px;
+      gap: 0.5rem;
       text-decoration: none;
+      white-space: nowrap;
     }
     
     .btn:hover {
       transform: translateY(-2px);
-      box-shadow: 0 6px 16px rgba(102, 126, 234, 0.4);
+      box-shadow: var(--shadow-md);
+      border-color: var(--accent-primary);
+      background: var(--border-color);
     }
     
     .btn:active {
       transform: translateY(0);
     }
     
-    .btn-primary { background: linear-gradient(135deg, #4CAF50, #45a049); }
-    .btn-secondary { background: linear-gradient(135deg, #2196F3, #1976D2); }
-    .btn-accent { background: linear-gradient(135deg, #FF9800, #F57C00); }
-    .btn-danger { background: linear-gradient(135deg, #f44336, #d32f2f); }
+    .btn-primary { 
+      background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+      border-color: var(--accent-primary);
+      color: white;
+    }
+    
+    .btn-primary:hover {
+      background: linear-gradient(135deg, #5b5fe3, #7c7fff);
+      box-shadow: 0 8px 25px rgba(99, 102, 241, 0.3);
+    }
+    
+    .btn-secondary { 
+      background: var(--bg-tertiary);
+      border-color: var(--border-color);
+    }
+    
+    .btn-accent { 
+      background: var(--warning);
+      border-color: var(--warning);
+      color: white;
+    }
+    
+    .btn-accent:hover {
+      background: #d97706;
+      box-shadow: 0 4px 15px rgba(245, 158, 11, 0.3);
+    }
+    
+    .btn-danger { 
+      background: var(--danger);
+      border-color: var(--danger);
+      color: white;
+    }
+    
+    .btn-danger:hover {
+      background: #dc2626;
+      box-shadow: 0 4px 15px rgba(239, 68, 68, 0.3);
+    }
     
     /* Chat Section */
     .chat-section {
-      background: rgba(255,255,255,0.1);
-      backdrop-filter: blur(10px);
-      border-radius: 16px;
-      padding: 25px;
-      border: 1px solid rgba(255,255,255,0.2);
-      margin-bottom: 25px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      padding: 2rem;
+      box-shadow: var(--shadow-md);
+      height: fit-content;
     }
     
     .chat-section h3 {
-      margin-bottom: 20px;
-      font-size: 1.3rem;
+      margin-bottom: 1.5rem;
+      font-size: 1.4rem;
+      font-weight: 700;
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 0.75rem;
+      color: var(--text-primary);
     }
     
     .chat-messages {
-      height: 200px;
+      height: 320px;
       overflow-y: auto;
-      background: rgba(0,0,0,0.3);
-      border-radius: 10px;
-      padding: 15px;
-      margin-bottom: 15px;
-      border: 1px solid rgba(255,255,255,0.1);
+      background: var(--bg-primary);
+      border-radius: var(--radius-md);
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+      border: 1px solid var(--border-color);
       scrollbar-width: thin;
+      scrollbar-color: var(--border-color) transparent;
     }
     
     .chat-messages::-webkit-scrollbar {
-      width: 6px;
+      width: 8px;
     }
     
     .chat-messages::-webkit-scrollbar-track {
-      background: rgba(255,255,255,0.1);
-      border-radius: 3px;
+      background: transparent;
     }
     
     .chat-messages::-webkit-scrollbar-thumb {
-      background: rgba(255,255,255,0.3);
-      border-radius: 3px;
+      background: var(--border-color);
+      border-radius: 4px;
+    }
+    
+    .chat-messages::-webkit-scrollbar-thumb:hover {
+      background: var(--text-muted);
     }
     
     .chat-message {
-      margin-bottom: 12px;
-      padding: 10px 12px;
-      border-radius: 8px;
-      background: rgba(255,255,255,0.1);
-      font-size: 0.9rem;
-      line-height: 1.4;
-      border-left: 3px solid #4CAF50;
+      margin-bottom: 1rem;
+      padding: 0.75rem 1rem;
+      border-radius: var(--radius-sm);
+      background: var(--bg-secondary);
+      font-size: 0.95rem;
+      line-height: 1.5;
+      border-left: 3px solid var(--accent-primary);
     }
     
     .chat-user {
-      font-weight: bold;
-      color: #4CAF50;
-      margin-right: 8px;
+      font-weight: 700;
+      color: var(--accent-secondary);
+      margin-right: 0.5rem;
     }
     
     .chat-time {
-      opacity: 0.7;
-      font-size: 0.8em;
-      margin-left: 8px;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      margin-left: 0.5rem;
     }
     
     .chat-input-group {
       display: flex;
-      gap: 12px;
+      gap: 1rem;
     }
     
     .chat-input {
       flex: 1;
-      padding: 12px 16px;
-      border: 2px solid rgba(255,255,255,0.2);
-      border-radius: 10px;
+      padding: 1rem 1.5rem;
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
       font-size: 1rem;
-      background: rgba(255,255,255,0.1);
-      color: white;
-      backdrop-filter: blur(10px);
+      background: var(--bg-tertiary);
+      color: var(--text-primary);
+      transition: var(--transition);
     }
     
     .chat-input::placeholder {
-      color: rgba(255,255,255,0.7);
+      color: var(--text-muted);
     }
     
     .chat-input:focus {
       outline: none;
-      border-color: #4CAF50;
-      box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.2);
+      border-color: var(--accent-primary);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
     }
     
     /* Info Section */
     .info-section {
-      background: rgba(255,255,255,0.1);
-      backdrop-filter: blur(10px);
-      border-radius: 16px;
-      padding: 25px;
-      border: 1px solid rgba(255,255,255,0.2);
-      margin-top: 25px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      padding: 2rem;
+      margin-top: 2rem;
+      box-shadow: var(--shadow-md);
     }
     
     .info-section h3 {
-      margin-bottom: 20px;
-      color: #4CAF50;
-      font-size: 1.3rem;
+      margin-bottom: 1.5rem;
+      color: var(--accent-secondary);
+      font-size: 1.4rem;
+      font-weight: 700;
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 0.75rem;
     }
     
     .info-section ul {
@@ -368,58 +687,73 @@
     }
     
     .info-section li {
-      margin: 12px 0;
-      padding: 10px 15px;
-      padding-left: 40px;
+      margin: 1rem 0;
+      padding: 1rem 1.5rem;
+      padding-left: 3rem;
       position: relative;
-      background: rgba(255,255,255,0.05);
-      border-radius: 8px;
-      line-height: 1.5;
+      background: var(--bg-tertiary);
+      border-radius: var(--radius-sm);
+      line-height: 1.6;
+      color: var(--text-secondary);
     }
     
     .info-section li:before {
       content: "✓";
       position: absolute;
-      left: 15px;
-      top: 10px;
-      color: #4CAF50;
-      font-weight: bold;
-      font-size: 1.1rem;
+      left: 1rem;
+      top: 1rem;
+      color: var(--success);
+      font-weight: 700;
+      font-size: 1.2rem;
     }
     
     /* Responsive Design */
-    @media (max-width: 768px) {
-      .container {
-        padding: 15px;
-      }
-      
-      .header h1 {
-        font-size: 2.2rem;
+    @media (max-width: 1024px) {
+      .main-content {
+        grid-template-columns: 1fr;
       }
       
       .controls-panel {
         grid-template-columns: 1fr;
+      }
+    }
+    
+    @media (max-width: 768px) {
+      .container {
+        padding: 1.5rem 1rem;
+      }
+      
+      .header h1 {
+        font-size: 2.5rem;
       }
       
       .button-group {
         grid-template-columns: 1fr;
       }
       
-      .video-overlay input {
-        width: 95%;
-        font-size: 0.9rem;
+      .video-overlay input[type="text"] {
+        width: 100%;
+        font-size: 1rem;
       }
       
       .video-overlay h3 {
-        font-size: 1.5rem;
+        font-size: 1.75rem;
       }
       
       .chat-input-group {
         flex-direction: column;
       }
       
-      .control-card, .chat-section, .info-section {
-        padding: 20px;
+      .control-card, .chat-section {
+        padding: 1.5rem;
+      }
+      
+      .video-section {
+        padding: 1.5rem;
+      }
+      
+      .chat-messages {
+        height: 240px;
       }
     }
     
@@ -428,9 +762,9 @@
       display: inline-block;
       width: 20px;
       height: 20px;
-      border: 3px solid rgba(255,255,255,0.3);
+      border: 3px solid var(--border-color);
       border-radius: 50%;
-      border-top-color: #fff;
+      border-top-color: var(--accent-primary);
       animation: spin 1s ease-in-out infinite;
     }
     
@@ -441,16 +775,19 @@
     /* Toast Notifications */
     .toast {
       position: fixed;
-      top: 20px;
-      right: 20px;
-      background: rgba(0,0,0,0.9);
-      color: white;
-      padding: 12px 20px;
-      border-radius: 8px;
+      bottom: 2rem;
+      right: 2rem;
+      background: var(--bg-secondary);
+      color: var(--text-primary);
+      padding: 1rem 1.5rem;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border-color);
+      box-shadow: var(--shadow-lg);
       z-index: 1000;
       opacity: 0;
       transform: translateX(100%);
       transition: all 0.3s ease;
+      font-weight: 500;
     }
     
     .toast.show {
@@ -459,111 +796,363 @@
     }
     
     .toast.success {
-      border-left: 4px solid #4CAF50;
+      border-left: 4px solid var(--success);
     }
     
     .toast.error {
-      border-left: 4px solid #f44336;
+      border-left: 4px solid var(--danger);
     }
   </style>
 </head>
 <body>
+  <!-- Login Page -->
+  <div class="login-container" id="loginContainer">
+    <div class="login-card">
+      <h1>🎬 Movie Sync</h1>
+      <p>Please login to continue</p>
+      <form class="login-form" id="loginForm">
+        <input 
+          type="text" 
+          class="login-input" 
+          id="username" 
+          placeholder="Username" 
+          required
+        >
+        <input 
+          type="password" 
+          class="login-input" 
+          id="password" 
+          placeholder="Password" 
+          required
+        >
+        <button type="submit" class="login-button" id="loginButton">
+          Login
+        </button>
+        <div class="login-error" id="loginError">
+          Invalid username or password
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Main Application -->
+  <div class="main-app" id="mainApp">
   <div class="container">
     <div class="header">
       <h1>🎬 Movie Sync</h1>
       <p>Watch movies together, perfectly synchronized</p>
     </div>
     
-    <!-- Video Section -->
-    <div class="video-section">
-      <div class="video-container">
-        <video id="player" controls preload="metadata" crossorigin="anonymous" playsinline>
-          <!-- Video source will be set dynamically -->
-        </video>
+    <div class="main-content">
+      <!-- Left Panel: Video and Controls -->
+      <div class="left-panel">
+        <!-- Video Section -->
+        <div class="video-section">
+          <div class="video-container">
+            <video id="player"
+                   class="video-js vjs-default-skin"
+                   controls
+                   preload="metadata"
+                   width="100%"
+                   height="auto"
+                   crossorigin="anonymous"
+                   playsinline>
+              <p class="vjs-no-js">
+                To view this video please enable JavaScript, and consider upgrading to a web browser that
+                <a href="https://videojs.com/html5-video-support/" target="_blank">supports HTML5 video</a>.
+              </p>
+            </video>
+            
+            <div class="video-overlay show" id="videoOverlay">
+              <h3>🎥 Set Up Your Movie</h3>
+              <p>Enter your Google Drive video URL or any video link</p>
+              <input type="text" id="movieUrlInput" placeholder="https://drive.google.com/file/d/YOUR_FILE_ID/view OR any video URL">
+              
+              <div class="subtitle-section">
+                <p>📝 Optional: Add Subtitles</p>
+                <input type="file" id="subtitleInput" accept=".vtt,.srt" title="Upload subtitle file (.vtt or .srt)">
+                <small style="display: block; margin-top: 5px; opacity: 0.7;">Supports .vtt and .srt subtitle files</small>
+              </div>
+            </div>
+          </div>
+        </div>
         
-        <div class="video-overlay show" id="videoOverlay">
-          <h3>🎥 Set Up Your Movie</h3>
-          <p>Enter your Google Drive video URL or any video link</p>
-          <input type="text" id="movieUrlInput" placeholder="https://drive.google.com/file/d/YOUR_FILE_ID/view OR any video URL">
-          <div>
-            <button onclick="loadMovieFromUrl()">🚀 Load Movie</button>
-            <button class="secondary" onclick="showUrlHelp()">❓ Need Help?</button>
+        <!-- Controls Panel -->
+        <div class="controls-panel">
+          <div class="control-card">
+            <h3>🔗 Connection Status</h3>
+            <div class="stat-row">
+              <span>Status:</span>
+              <span class="stat-value">
+                <span id="statusIndicator" class="status-indicator status-disconnected"></span>
+                <span id="status">Connecting...</span>
+              </span>
+            </div>
+            <div class="stat-row">
+              <span>Last Sync:</span>
+              <span class="stat-value" id="lastSync">Never</span>
+            </div>
+            <div class="stat-row">
+              <span>Connected Users:</span>
+              <span class="stat-value" id="userCount">0</span>
+            </div>
+          </div>
+          
+          <div class="control-card">
+            <h3>🎮 Video Controls</h3>
+            <div class="button-group">
+              <button class="btn btn-primary" onclick="forceSyncTime()">
+                🔄 Force Sync
+              </button>
+              <button class="btn btn-accent" onclick="copyRoomLink()">
+                📋 Share Link
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Right Panel: Chat -->
+      <div class="right-panel">
+        <div class="chat-section">
+          <h3>💬 Chat with your friend</h3>
+          <div class="chat-messages" id="chatMessages">
+            <div class="chat-message">
+              <span class="chat-user">System</span>
+              <span class="chat-time">now</span><br>
+              Welcome! Start chatting when your friend joins.
+            </div>
+          </div>
+          <div class="chat-input-group">
+            <input type="text" class="chat-input" id="chatInput" placeholder="Type a message..." maxlength="200">
+            <button class="btn btn-primary" onclick="sendChatMessage()">Send</button>
           </div>
         </div>
       </div>
     </div>
-    
-    <!-- Controls Panel -->
-    <div class="controls-panel">
-      <div class="control-card">
-        <h3>🔗 Connection Status</h3>
-        <div class="stat-row">
-          <span>Status:</span>
-          <span class="stat-value">
-            <span id="statusIndicator" class="status-indicator status-disconnected"></span>
-            <span id="status">Connecting...</span>
-          </span>
-        </div>
-        <div class="stat-row">
-          <span>Last Sync:</span>
-          <span class="stat-value" id="lastSync">Never</span>
-        </div>
-        <div class="stat-row">
-          <span>Connected Users:</span>
-          <span class="stat-value" id="userCount">0</span>
-        </div>
-      </div>
-      
-      <div class="control-card">
-        <h3>🎮 Video Controls</h3>
-        <div class="button-group">
-          <button class="btn btn-primary" onclick="forceSyncTime()">
-            🔄 Force Sync
-          </button>
-          <button class="btn btn-secondary" onclick="toggleFullscreen()">
-            ⛶ Fullscreen  
-          </button>
-          <button class="btn btn-accent" onclick="copyRoomLink()">
-            📋 Share Link
-          </button>
-        </div>
-      </div>
-    </div>
-    
-    <!-- Chat Section -->
-    <div class="chat-section">
-      <h3>💬 Chat with your friend</h3>
-      <div class="chat-messages" id="chatMessages">
-        <div class="chat-message">
-          <span class="chat-user">System</span>
-          <span class="chat-time">now</span><br>
-          Welcome! Start chatting when your friend joins.
-        </div>
-      </div>
-      <div class="chat-input-group">
-        <input type="text" class="chat-input" id="chatInput" placeholder="Type a message..." maxlength="200">
-        <button class="btn btn-primary" onclick="sendChatMessage()">Send</button>
-      </div>
-    </div>
-    
-    <!-- Info Section -->
-    <div class="info-section">
-      <h3>🎯 How to Use</h3>
-      <ul>
-        <li>Upload your movie to Google Drive and make it shareable</li>
-        <li>Copy the Google Drive link and paste it above</li>
-        <li>Share this page URL with your friend</li>
-        <li>Both click play and enjoy synchronized viewing!</li>
-        <li>Use chat to communicate during the movie</li>
-        <li>Click "Force Sync" if you get out of sync</li>
-      </ul>
-    </div>
   </div>
+  </div> <!-- End main-app -->
 
   <script>
+    // Login Authentication - Now using server-side validation
+    
+    // Function to initialize login system
+    function initializeLogin() {
+      const loginContainer = document.getElementById('loginContainer');
+      const mainApp = document.getElementById('mainApp');
+      const loginForm = document.getElementById('loginForm');
+      const loginError = document.getElementById('loginError');
+      const usernameInput = document.getElementById('username');
+      const passwordInput = document.getElementById('password');
+      const loginButton = document.getElementById('loginButton');
+
+      if (!loginContainer || !mainApp || !loginForm) {
+        return;
+      }
+
+      // Check if user is already logged in
+      const isLoggedIn = localStorage.getItem('movieSyncLoggedIn') === 'true';
+      const loggedInUser = localStorage.getItem('movieSyncUser');
+
+      if (isLoggedIn && loggedInUser) {
+        showMainApp();
+        return;
+      }
+
+      // Handle login form submission
+      loginForm.addEventListener('submit', async function(e) {
+        e.preventDefault();
+        
+        const username = usernameInput.value.trim();
+        const password = passwordInput.value.trim();
+        
+        loginButton.disabled = true;
+        loginButton.textContent = 'Logging in...';
+        loginError.classList.remove('show');
+        
+        try {
+          const response = await fetch('/api/login', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ username, password })
+          });
+          
+          const result = await response.json();
+          
+          if (result.success) {
+            // Successful login
+            localStorage.setItem('movieSyncLoggedIn', 'true');
+            localStorage.setItem('movieSyncUser', result.user);
+            showMainApp();
+          } else {
+            // Failed login
+            loginError.textContent = result.message || 'Invalid credentials';
+            loginError.classList.add('show');
+            usernameInput.value = '';
+            passwordInput.value = '';
+            usernameInput.focus();
+          }
+        } catch (error) {
+          console.error('Login error:', error);
+          loginError.textContent = 'Login failed. Please try again.';
+          loginError.classList.add('show');
+        }
+        
+        loginButton.disabled = false;
+        loginButton.textContent = 'Login';
+      });
+
+      function showMainApp() {
+        loginContainer.classList.add('hidden');
+        setTimeout(() => {
+          mainApp.classList.add('show');
+          initializeApp();
+        }, 300);
+      }
+
+      // Add Enter key support for password field
+      if (passwordInput) {
+        passwordInput.addEventListener('keypress', function(e) {
+          if (e.key === 'Enter') {
+            loginForm.dispatchEvent(new Event('submit'));
+          }
+        });
+      }
+    }
+
+    // Add logout functionality
+    window.logout = function() {
+      localStorage.removeItem('movieSyncLoggedIn');
+      localStorage.removeItem('movieSyncUser');
+      location.reload();
+    }
+
+    // Initialize when DOM is ready
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initializeLogin);
+    } else {
+      initializeLogin();
+    }
+
+    // --- Compatibility & Conversion Helper (Option B Tool) ---
+    // Inject lightweight panel (lazy-created on first open)
+    let compatPanel = null;
+    function toggleCompatPanel() {
+      if (!compatPanel) buildCompatPanel();
+      compatPanel.classList.toggle('show-compat');
+    }
+    function buildCompatPanel() {
+      compatPanel = document.createElement('div');
+      compatPanel.id = 'compatPanel';
+      compatPanel.style.cssText = `position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:min(720px,92%);max-height:85vh;overflow-y:auto;background:rgba(20,20,30,0.95);border:1px solid rgba(255,255,255,0.15);backdrop-filter:blur(14px);padding:22px 26px;border-radius:18px;z-index:1000;font-size:14px;line-height:1.5;display:flex;flex-direction:column;gap:14px;box-shadow:0 12px 36px rgba(0,0,0,0.45);`;       
+      compatPanel.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+          <h2 style="margin:0;font-size:1.3rem;display:flex;align-items:center;gap:8px;">🧪 Compatibility & Conversion Helper</h2>
+          <button onclick="toggleCompatPanel()" style="background:#c62828;border:none;color:#fff;padding:8px 14px;border-radius:8px;cursor:pointer;font-weight:500;">✖ Close</button>
+        </div>
+        <p style="margin:0;opacity:.85;">Use this to check if a <strong>local file</strong> is likely playable directly from Google Drive (H.264 + AAC MP4) or needs conversion before uploading. Nothing is uploaded here; analysis stays in your browser.</p>
+        <div style="display:flex;flex-direction:column;gap:10px;background:rgba(255,255,255,0.05);padding:14px 16px;border-radius:12px;">
+          <label style="font-weight:600;">1. Pick a local video file:</label>
+          <input type="file" id="compatFile" accept="video/*" style="padding:10px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.2);border-radius:10px;color:#fff;">
+          <div style="display:flex;gap:10px;flex-wrap:wrap;">
+            <button onclick="analyzeCompatibility()" style="background:#0277BD;border:none;color:#fff;padding:10px 18px;border-radius:8px;cursor:pointer;font-weight:500;">🔍 Analyze</button>
+            <button onclick="copyFfmpegCommand(false)" style="background:#2E7D32;border:none;color:#fff;padding:10px 18px;border-radius:8px;cursor:pointer;font-weight:500;">📋 Copy Standard ffmpeg</button>
+            <button onclick="copyFfmpegCommand(true)" style="background:#558B2F;border:none;color:#fff;padding:10px 18px;border-radius:8px;cursor:pointer;font-weight:500;">📋 Copy Fast (copy)</button>
+          </div>
+          <small style="opacity:.65;">The fast (copy) command only works if the video is already H.264 (yuv420p) and AAC. If unsure, use the standard conversion.</small>
+        </div>
+        <div id="compatResult" style="white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:12.5px;background:rgba(0,0,0,0.5);padding:14px 16px;border-radius:12px;min-height:120px;border:1px solid rgba(255,255,255,0.1);"></div>
+        <div style="background:rgba(255,255,255,0.05);padding:14px 16px;border-radius:12px;">
+          <h3 style="margin:0 0 8px;font-size:1.05rem;">2. Convert Locally (Terminal)</h3>
+          <code id="ffmpegStandard" style="display:block;padding:10px;background:rgba(0,0,0,0.55);border-radius:8px;margin-bottom:6px;overflow-x:auto;">ffmpeg -i INPUT_FILE -c:v libx264 -preset slow -crf 20 -profile:v high -level 4.1 -pix_fmt yuv420p -c:a aac -b:a 160k -movflags +faststart OUTPUT_converted.mp4</code>
+          <code id="ffmpegCopy" style="display:block;padding:10px;background:rgba(0,0,0,0.55);border-radius:8px;overflow-x:auto;">ffmpeg -i INPUT_FILE -c:v copy -c:a copy -movflags +faststart OUTPUT_fast.mp4</code>
+          <small style="display:block;opacity:.7;margin-top:6px;">Use the top command for guaranteed compatibility. The copy command is instant but only safe if codecs already H.264/AAC.</small>
+        </div>
+        <div style="background:rgba(255,255,255,0.05);padding:14px 16px;border-radius:12px;">
+          <h3 style="margin:0 0 8px;font-size:1.05rem;">3. Upload & Share</h3>
+          <ol style="margin:0 0 6px 18px;padding:0;font-size:0.9rem;display:flex;flex-direction:column;gap:4px;">
+            <li>Upload OUTPUT_converted.mp4 to Google Drive</li>
+            <li>Right-click → Share → Anyone with link: Viewer</li>
+            <li>Copy link, paste in the main input, click Load Movie</li>
+            <li>If seeks fail: you likely didn’t use the converted file</li>
+          </ol>
+          <small style="opacity:.65;">Large files may take time for Drive to generate streaming variants; wait a minute if initial seeking stalls.</small>
+        </div>
+        <div style="text-align:right;opacity:.55;font-size:0.75rem;">This helper does not upload or transmit your local file.</div>
+      `;
+      document.body.appendChild(compatPanel);
+    }
+    function analyzeCompatibility() {
+      const out = document.getElementById('compatResult');
+      const inp = document.getElementById('compatFile');
+      out.textContent = '';
+      if (!inp.files || !inp.files[0]) { out.textContent = 'Select a file first.'; return; }
+      const file = inp.files[0];
+      const name = file.name;
+      const sizeMB = (file.size/1024/1024).toFixed(2);
+      const type = file.type || '(unknown MIME)';
+      const ext = name.toLowerCase().split('.').pop();
+      const suspicious = ['mkv','mov','hevc','avi','ts','m2ts','webm'];
+      const likelyNeeds = suspicious.includes(ext) ? 'YES (container/extension not ideal)' : (ext==='mp4' ? 'MAYBE (need codecs check)' : 'UNKNOWN');
+      const v = document.createElement('video');
+      v.preload='metadata';
+      let timeoutId;
+      const url = URL.createObjectURL(file);
+      const supportMp4 = !!document.createElement('video').canPlayType('video/mp4; codecs="avc1.42E01E, mp4a.40.2"');
+      let report = [];
+      report.push(`File: ${name}`);
+      report.push(`Size: ${sizeMB} MB`);
+      report.push(`MIME: ${type}`);
+      report.push(`Extension: .${ext}`);
+      report.push(`Browser baseline mp4 support: ${supportMp4 ? 'YES' : 'NO'}`);
+      report.push(`Heuristic needs conversion: ${likelyNeeds}`);
+      report.push('Probing metadata...');
+      v.onerror = () => {
+        clearTimeout(timeoutId);
+        report.push('Result: Metadata load failed → convert recommended');
+        finalize();
+      };
+      v.onloadedmetadata = () => {
+        clearTimeout(timeoutId);
+        report.push(`Duration: ${v.duration.toFixed(2)}s`);
+        report.push(`Resolution: ${v.videoWidth}x${v.videoHeight}`);
+        report.push('Result: Basic container playable. (Codecs still assumed; if seek breaks later, convert anyway)');
+        finalize();
+      };
+      v.src = url;
+      timeoutId = setTimeout(()=>{ report.push('Timeout: metadata not loaded → convert to be safe'); finalize(); }, 4000);
+      function finalize() { out.textContent = report.join('\n'); try { URL.revokeObjectURL(url);} catch(e){} }
+    }
+    function copyFfmpegCommand(fast) {
+      const cmd = fast ? document.getElementById('ffmpegCopy').textContent : document.getElementById('ffmpegStandard').textContent;
+      navigator.clipboard.writeText(cmd).then(()=>{
+        showToast(fast?'Fast copy command copied':'Standard ffmpeg command copied');
+      }).catch(()=>{
+        showToast('Copy failed','error');
+      });
+    }
+    // END Compatibility Helper
+    // Global error handling
+    window.addEventListener('error', (e) => {
+      console.error('Global error:', e.error);
+      console.error('Error details:', e.message, 'at', e.filename, ':', e.lineno);
+    });
+
+    window.addEventListener('unhandledrejection', (e) => {
+      console.error('Unhandled promise rejection:', e.reason);
+    });
+
     // Global variables
-    const socket = io();
-    const player = document.getElementById('player');
+    const socket = io({
+      transports: ['websocket', 'polling'],
+      reconnection: true,
+      reconnectionAttempts: 10,
+      reconnectionDelay: 1000,
+      timeout: 20000
+    });
+    let player = null; // Video.js player instance
     const statusEl = document.getElementById('status');
     const statusIndicator = document.getElementById('statusIndicator');
     const userCountEl = document.getElementById('userCount');
@@ -574,12 +1163,35 @@
     const movieUrlInput = document.getElementById('movieUrlInput');
     
     const SYNC_THRESHOLD = 2.0; // seconds
+    const ENABLE_ADVANCED_SEEK_GUARDS = true; // flip to false to disable drift/jump protection
     let suppressLocal = false;
     let isBuffering = false;
     let lastSyncTime = null;
     let movieLoaded = false;
-    let isSeeking = false; 
+    let isSeeking = false;
+    let seekTimeout;
+    let lastSeekTime = 0; 
+    let lastPong = Date.now();
+  // Additional seek stabilization
+  let lastLocalSeekTarget = null;
+  let lastLocalSeekAt = 0;
+  let lastCorrectionAt = 0;
+  const SEEK_CORRECTION_WINDOW = 2000; // ms window after seek where we correct unintended jumps
+  const SEEK_DRIFT_THRESHOLD = 0.75; // seconds difference considered a drift
+  let programmaticSeek = false; // internal corrective seek flag
+    // New instrumentation & protection variables
+    let seekProtectionUntil = 0; // timestamp (ms) until which unexpected jumps are rejected
+    let lastUserSeekTarget = null; // last user intended seek target
+    const SEEK_PROTECTION_MS = 1800; // protection window length
+    const UNEXPECTED_JUMP_THRESHOLD = 2.5; // seconds jump considered unexpected
+    let lastLoggedCurrentTime = -1;
 
+    function shortStack() {
+      try {
+        const stack = new Error().stack.split('\n').slice(2,7).map(l=>l.trim());
+        return stack.join(' | ');
+      } catch(e) { return 'no-stack'; }
+    }
     // Utility Functions
     function updateStatus(status, type = 'connected') {
       statusEl.textContent = status;
@@ -606,7 +1218,7 @@
     }
 
     function emitControl(type, time, force = false) {
-      if ((!suppressLocal || force) && movieLoaded && !isSeeking) {
+      if ((!suppressLocal || force) && movieLoaded && player) {
         const controlData = { 
           type, 
           time: parseFloat(time.toFixed(2)),
@@ -724,34 +1336,104 @@
       testVideo.load();
     }
 
-    // Load movie into the main player
+    // Load movie into Video.js player
     function loadMovie(url, originalUrl) {
       updateStatus('Loading movie...', 'syncing');
       
-      player.src = url;
-      player.load();
+      if (!player) {
+        console.error('Player not initialized');
+        showToast('Player not ready', 'error');
+        return;
+      }
+      
+      // Set the source for Video.js
+      player.src({
+        src: url,
+        type: 'video/mp4' // Video.js will auto-detect if needed
+      });
+      
+      // Handle subtitle file if uploaded
+      const subtitleInput = document.getElementById('subtitleInput');
+      if (subtitleInput.files && subtitleInput.files[0]) {
+        handleSubtitleFile(subtitleInput.files[0]);
+      }
       
       // Update movie URL in room
       if (originalUrl) {
         socket.emit('updateMovieUrl', originalUrl);
       }
       
-      // Success handler
-      player.addEventListener('loadedmetadata', () => {
-        movieLoaded = true;
-        videoOverlay.classList.remove('show');
-        updateStatus('Movie loaded successfully', 'connected');
-        showToast('Movie loaded successfully!');
-      }, { once: true });
+      console.log('🎬 Loading movie:', url);
+    }
 
-      // Error handler
-      player.addEventListener('error', (e) => {
-        console.error('Video load error:', e);
-        updateStatus('Failed to load movie', 'disconnected');
-        showToast('Failed to load movie. Try a different format or check permissions.', 'error');
-        videoOverlay.classList.add('show');
-        movieLoaded = false;
-      }, { once: true });
+    // Handle subtitle file upload
+    function handleSubtitleFile(file) {
+      if (!file) return;
+      
+      console.log('📝 Processing subtitle file:', file.name);
+      showToast('Processing subtitles...', 'success');
+      
+      const fileReader = new FileReader();
+      
+      fileReader.onload = function(e) {
+        try {
+          let subtitleContent = e.target.result;
+          
+          // Convert SRT to VTT if needed
+          if (file.name.toLowerCase().endsWith('.srt')) {
+            subtitleContent = convertSrtToVtt(subtitleContent);
+          }
+          
+          // Create a blob URL for the subtitle
+          const blob = new Blob([subtitleContent], { type: 'text/vtt' });
+          const subtitleUrl = URL.createObjectURL(blob);
+          
+          // Add subtitle track to Video.js player
+          if (player && player.ready) {
+            player.ready(() => {
+              try {
+                // Add new subtitle track using Video.js method
+                player.addRemoteTextTrack({
+                  kind: 'subtitles',
+                  label: 'Subtitles',
+                  language: 'en',
+                  src: subtitleUrl,
+                  default: true
+                }, false);
+                
+                console.log('📝 Subtitles loaded:', file.name);
+                showToast(`Subtitles loaded: ${file.name}`, 'success');
+              } catch (trackError) {
+                console.error('Error adding subtitle track:', trackError);
+                showToast('Error loading subtitles', 'error');
+              }
+            });
+          }
+        } catch (error) {
+          console.error('Error processing subtitle file:', error);
+          showToast('Error processing subtitle file', 'error');
+        }
+      };
+      
+      fileReader.onerror = function() {
+        console.error('Error reading subtitle file');
+        showToast('Error reading subtitle file', 'error');
+      };
+      
+      fileReader.readAsText(file);
+    }
+
+    // Convert SRT format to VTT format
+    function convertSrtToVtt(srtContent) {
+      let vttContent = 'WEBVTT\n\n';
+      
+      // Replace SRT timestamp format with VTT format
+      vttContent += srtContent
+        .replace(/(\d+:\d+:\d+),(\d+)/g, '$1.$2')  // Replace comma with dot in timestamps
+        .replace(/^\d+\s*$/gm, '')                 // Remove sequence numbers
+        .replace(/\n\n\n/g, '\n\n');              // Clean up extra newlines
+      
+      return vttContent;
     }
 
     function showUrlHelp() {
@@ -778,86 +1460,387 @@ You can also use direct video URLs from:
 If a video fails to load, the app will automatically try multiple URL formats to find one that works.`);
     }
 
-    // Video Event Listeners
-    player.addEventListener('loadstart', () => {
-      if (movieLoaded) updateStatus('Loading...', 'syncing');
-    });
+  // (Removed premature native event listeners on uninitialized player)
 
-    player.addEventListener('canplay', () => {
-      isBuffering = false;
-      if (statusEl.textContent.includes('buffering') && movieLoaded) {
-        updateStatus('Ready to play', 'connected');
+    // Initialize Video.js player
+    function initializePlayer() {
+      try {
+        if (player && typeof player.ready === 'function') {
+          console.log('🎥 Player already initialized; skipping re-init.');
+          return;
+        }
+        // Check if videojs is available
+        if (typeof videojs === 'undefined') {
+          console.error('Video.js not loaded, falling back to basic HTML5 video');
+          updateStatus('Connected (basic player)', 'connected');
+          setupBasicVideoEvents();
+          return;
+        }
+
+        console.log('🎥 Initializing Video.js player...');
+
+        player = videojs('player', {
+          controls: true,
+          fluid: true,
+          responsive: true,
+          playbackRates: [0.5, 1, 1.25, 1.5, 2],
+          plugins: {},
+          techOrder: ['html5'],
+          html5: {
+            vhs: {
+              overrideNative: !videojs.browser.IS_SAFARI
+            }
+          }
+        });
+
+        // Wait for player to be ready
+        player.ready(() => {
+          console.log('🎥 Video.js player initialized successfully');
+          updateStatus('Connected', 'connected');
+          // Monkey patch currentTime for setter instrumentation
+          try {
+            const origCurrentTime = player.currentTime.bind(player);
+            player._setHistory = [];
+            player.currentTime = function(v) {
+              if (typeof v === 'number') {
+                const stack = new Error().stack.split('\n').slice(2,6).map(l=>l.trim()).join(' | ');
+                console.log(`🧪 currentTime(set ${v.toFixed(2)}) suppress=${suppressLocal} prog=${programmaticSeek} stack=${stack}`);
+                player._setHistory.push({v, t: performance.now(), suppress: suppressLocal, prog: programmaticSeek});
+                return origCurrentTime(v);
+              }
+              return origCurrentTime();
+            };
+          } catch (e) { console.warn('Instrumentation patch failed', e); }
+          setupPlayerEventListeners();
+        });
+
+        // Handle player creation errors
+        player.on('error', (e) => {
+          console.error('Video.js player error:', e);
+          updateStatus('Player error (still connected)', 'connected');
+        });
+
+      } catch (error) {
+        console.error('Failed to initialize Video.js:', error);
+        console.log('🔄 Falling back to basic HTML5 video');
+        updateStatus('Connected (basic player)', 'connected');
+        setupBasicVideoEvents();
       }
-    });
+    }
 
-    player.addEventListener('waiting', () => {
-      isBuffering = true;
-      if (movieLoaded) updateStatus('Buffering...', 'syncing');
-    });
+    // Fallback to basic HTML5 video if Video.js fails
+    function setupBasicVideoEvents() {
+      const videoElement = document.getElementById('player');
+      if (!videoElement) return;
 
-    player.addEventListener('play', () => {
-      if (!isBuffering && movieLoaded && !isSeeking) {
-        emitControl('play', player.currentTime);
-        updateStatus('Playing', 'connected');
-      }
-    });
+      videoElement.addEventListener('play', () => {
+        if (movieLoaded && !isSeeking) {
+          emitControl('play', videoElement.currentTime);
+          updateStatus('Playing', 'connected');
+        }
+      });
 
-    player.addEventListener('pause', () => {
-      if (movieLoaded && !isSeeking) {
-        emitControl('pause', player.currentTime);
-        updateStatus('Paused', 'connected');
-      }
-    });
+      videoElement.addEventListener('pause', () => {
+        if (movieLoaded && !isSeeking) {
+          emitControl('pause', videoElement.currentTime);
+          updateStatus('Paused', 'connected');
+        }
+      });
 
-    // FIXED: Handle seeking start - prevent other events during seek
-    player.addEventListener('seeking', () => {
-      if (movieLoaded) {
-        isSeeking = true;
-        console.log(`🎯 Seeking started at: ${player.currentTime}s`);
-        updateStatus('Seeking...', 'syncing');
-      }
-    });
-
-    // FIXED: Handle seek completion - only emit if user initiated
-    player.addEventListener('seeked', () => {
-      if (movieLoaded) {
-        console.log(`🎯 Seek completed to: ${player.currentTime}s, suppressLocal: ${suppressLocal}`);
-        
-        // Only emit if this was a user-initiated seek (not from sync)
-        if (!suppressLocal) {
-          emitControl('seek', player.currentTime);
+      videoElement.addEventListener('seeked', () => {
+        if (movieLoaded && !suppressLocal) {
+          emitControl('seek', videoElement.currentTime);
           updateStatus('Seek completed', 'connected');
         }
-        
-        // Reset seeking state after a brief delay
-        setTimeout(() => {
-          isSeeking = false;
-        }, 100);
-      }
-    });
+      });
+
+      console.log('🎥 Basic HTML5 video events set up');
+    }
+
+    // Setup all event listeners for Video.js player
+    function setupPlayerEventListeners() {
+      // Loading events
+      player.on('loadstart', () => {
+        if (movieLoaded) updateStatus('Loading...', 'syncing');
+      });
+
+      player.on('canplay', () => {
+        isBuffering = false;
+        if (statusEl.textContent.includes('buffering') && movieLoaded) {
+          updateStatus('Ready to play', 'connected');
+          // Notify other users that buffering is complete
+          socket.emit('control', { 
+            type: 'buffer-ready', 
+            time: parseFloat(player.currentTime().toFixed(2)),
+            timestamp: Date.now()
+          });
+        }
+      });
+
+      player.on('waiting', () => {
+        isBuffering = true;
+        if (movieLoaded) {
+          updateStatus('Buffering...', 'syncing');
+          // Notify other users that this client is buffering
+          socket.emit('control', { 
+            type: 'buffering', 
+            time: parseFloat(player.currentTime().toFixed(2)),
+            timestamp: Date.now()
+          });
+        }
+      });
+
+      // Play/pause events
+      player.on('play', () => {
+  const recentSeek = lastLocalSeekAt && (performance.now() - lastLocalSeekAt < 300);
+  if (!isBuffering && movieLoaded && !isSeeking && !recentSeek) {
+          emitControl('play', player.currentTime());
+          updateStatus('Playing', 'connected');
+        }
+      });
+
+      player.on('pause', () => {
+  const recentSeek = lastLocalSeekAt && (performance.now() - lastLocalSeekAt < 300);
+  if (movieLoaded && !isSeeking && !recentSeek) {
+          emitControl('pause', player.currentTime());
+          updateStatus('Paused', 'connected');
+        }
+      });
+
+      // Seeking events with debouncing
+      player.on('seeking', () => {
+        if (movieLoaded) {
+          const target = player.currentTime();
+          const duration = typeof player.duration === 'function' ? player.duration() : player.duration;
+          // Detect suspicious secondary seek (jump to 0 or end) soon after a real user seek
+          const suspiciousStart = target < 0.5 && lastUserSeekTarget != null && lastUserSeekTarget > 5;
+          const suspiciousEnd = duration && (duration - target < 0.5) && lastUserSeekTarget != null && lastUserSeekTarget < (duration - 5);
+          const withinProtection = performance.now() < seekProtectionUntil;
+          if (withinProtection && (suspiciousStart || suspiciousEnd)) {
+            console.warn(`🚫 Blocking suspicious seek to ${target.toFixed(2)}s (restoring ${lastUserSeekTarget.toFixed(2)}s)`);
+            suppressLocal = true;
+            programmaticSeek = true;
+            try { player.currentTime(lastUserSeekTarget); } catch(e) {}
+            setTimeout(()=> { suppressLocal = false; programmaticSeek = false; }, 350);
+            return; // Abort normal seeking flow
+          }
+
+          isSeeking = true;
+          console.log(`🎯 Seeking started to: ${target}s, suppressLocal: ${suppressLocal}`);
+          updateStatus('Seeking...', 'syncing');
+          lastLocalSeekTarget = target;
+          lastLocalSeekAt = performance.now();
+          lastUserSeekTarget = target;
+          seekProtectionUntil = performance.now() + SEEK_PROTECTION_MS;
+          if (seekTimeout) clearTimeout(seekTimeout);
+        }
+      });
+
+      player.on('seeked', () => {
+        if (movieLoaded) {
+          const currentTime = player.currentTime();
+          console.log(`🎯 Seek completed to: ${currentTime}s, suppressLocal: ${suppressLocal}`);
+          if (!suppressLocal) {
+            // Debounce rapid seeks
+            if (seekTimeout) clearTimeout(seekTimeout);
+            seekTimeout = setTimeout(() => {
+              const finalTime = player.currentTime();
+              console.log(`🎯 Sending debounced seek: ${finalTime}s`);
+              emitControl('seek', finalTime);
+              updateStatus('Seek completed', 'connected');
+              lastSeekTime = Date.now();
+            }, 200);
+          }
+          setTimeout(() => { isSeeking = false; }, 300);
+        }
+      });
+
+      // Instrument currentTime changes via timeupdate
+      player.on('timeupdate', () => {
+        if (!movieLoaded) return;
+        if (!ENABLE_ADVANCED_SEEK_GUARDS) return; // guards disabled
+        const nowPerf = performance.now();
+        const current = player.currentTime();
+        const duration = typeof player.duration === 'function' ? player.duration() : player.duration;
+
+        // Lightweight log every ~1s change to avoid log spam
+        if (Math.abs(current - lastLoggedCurrentTime) >= 1) {
+          console.log(`⏱ currentTime=${current.toFixed(2)}s${programmaticSeek?' [programmatic]':''}${suppressLocal?' [suppress]':''}`);
+          lastLoggedCurrentTime = current;
+        }
+
+        // Protection: reject sudden unexpected jump to ~0 or ~end right after a user seek elsewhere
+        const withinProtection = nowPerf < seekProtectionUntil;
+        if (withinProtection && lastUserSeekTarget != null && !programmaticSeek) {
+          const jumpFromTarget = Math.abs(current - lastUserSeekTarget);
+          const looksLikeStart = current < 0.5 && lastUserSeekTarget > 5;
+          const looksLikeEnd = duration && (duration - current < 1.0) && lastUserSeekTarget < (duration - 5);
+          if ((looksLikeStart || looksLikeEnd) && jumpFromTarget > UNEXPECTED_JUMP_THRESHOLD) {
+            console.warn(`🛑 Rejecting unexpected jump ${current.toFixed(2)}s (target ${lastUserSeekTarget.toFixed(2)}s, jump ${jumpFromTarget.toFixed(2)}s)`);
+            suppressLocal = true;
+            programmaticSeek = true;
+            try { player.currentTime(lastUserSeekTarget); } catch(e) { console.warn('Protection seek failed', e); }
+            setTimeout(()=> { suppressLocal = false; programmaticSeek = false; }, 450);
+            return; // Skip drift correction logic this tick
+          }
+        }
+
+        // Existing drift correction
+        if (lastLocalSeekTarget == null) return;
+        const sinceSeek = nowPerf - lastLocalSeekAt;
+        if (sinceSeek > SEEK_CORRECTION_WINDOW) {
+          lastLocalSeekTarget = null; // end window
+          return;
+        }
+        const driftThreshold = 1.2;
+        const drift = Math.abs(current - lastLocalSeekTarget);
+        const nearStart = current < 0.5 && lastLocalSeekTarget > 4;
+        const nearEnd = duration && (duration - current < 0.75) && lastLocalSeekTarget < (duration - 4);
+        if (!programmaticSeek && (nearStart || nearEnd) && drift > driftThreshold && (nowPerf - lastCorrectionAt > 400)) {
+          console.log(`🛠 Drift correction: revert ${current.toFixed(2)} -> ${lastLocalSeekTarget.toFixed(2)} (drift ${drift.toFixed(2)}s)`);
+          suppressLocal = true;
+          programmaticSeek = true;
+          try { player.currentTime(lastLocalSeekTarget); } catch(e) { console.warn('Correction failed', e); }
+          lastCorrectionAt = nowPerf;
+          setTimeout(()=> { suppressLocal = false; programmaticSeek = false; }, 400);
+        }
+
+        // Implicit jump detection (no seeking event fired but huge jump happened)
+        if (!isSeeking && lastUserSeekTarget != null) {
+          const gap = Math.abs(current - lastUserSeekTarget);
+          if (gap > 3 && nowPerf > seekProtectionUntil + 200) { // outside current window
+            console.warn(`⚠️ Detected implicit jump from ${lastUserSeekTarget.toFixed(2)}s to ${current.toFixed(2)}s (no seeking event)`);
+            // Start fresh protection window around new position
+            lastUserSeekTarget = current;
+            lastLocalSeekTarget = current;
+            lastLocalSeekAt = nowPerf;
+            seekProtectionUntil = nowPerf + SEEK_PROTECTION_MS;
+          }
+        }
+
+        // Detect jump directly to (or extremely near) duration when we didn't intend it
+        if (duration && current > 0 && (duration - current) < 0.5 && lastUserSeekTarget != null) {
+          const intendedAwayFromEnd = lastUserSeekTarget < (duration - 5);
+          const withinProt = nowPerf < seekProtectionUntil;
+          if (withinProt && intendedAwayFromEnd && !programmaticSeek) {
+            console.warn(`🛑 Jump-to-end detected (${current.toFixed(2)} ~ end). Reverting to ${lastUserSeekTarget.toFixed(2)}.`);
+            suppressLocal = true; programmaticSeek = true;
+            try { player.currentTime(lastUserSeekTarget); } catch(e) {}
+            setTimeout(()=> { suppressLocal = false; programmaticSeek = false; }, 450);
+            return; // Skip rest
+          }
+        }
+      });
+
+      // Error handling
+      player.on('error', (e) => {
+        console.error('Video.js error:', e);
+        updateStatus('Video error', 'disconnected');
+        showToast('Video playback error', 'error');
+        try {
+          const srcObj = player.currentSource();
+          if (srcObj && srcObj.src) {
+            const m = srcObj.src.match(/\/proxy\/([a-zA-Z0-9_-]+)/);
+            if (m) {
+              fetch(`/proxy-head/${m[1]}`).then(r=>r.json()).then(diag=>{
+                console.group('🧪 Proxy Diagnostics');
+                console.log(diag);
+                console.groupEnd();
+                const diagBox = document.createElement('div');
+                diagBox.style.cssText='position:fixed;bottom:20px;left:20px;max-width:380px;background:rgba(0,0,0,0.85);color:#fff;padding:12px 14px;border:1px solid rgba(255,255,255,0.15);border-radius:10px;font:12px/1.4 ui-monospace,monospace;z-index:2000;white-space:pre-wrap;';
+                diagBox.textContent =
+                  'Video load failed. Diagnostics:\n' +
+                  'status: '+ diag.status +'\n' +
+                  'content-type: '+ (diag.headers && diag.headers['content-type']) +'\n' +
+                  'containerGuess: '+ diag.containerGuess +'\n' +
+                  'looksHtml: '+ diag.looksHtml +'\n' +
+                  'bytes: '+ diag.sizeReturned +' (showing first 32 hex)\n' +
+                  diag.hexPreview;
+                document.body.appendChild(diagBox);
+                setTimeout(()=>{ diagBox.remove(); }, 12000);
+              }).catch(err=> console.warn('probe fetch failed', err));
+            }
+          }
+        } catch(err){ console.warn('diagnostic error', err); }
+      });
+
+      // Loaded metadata - movie is ready
+      player.on('loadedmetadata', () => {
+        movieLoaded = true;
+        videoOverlay.classList.remove('show');
+        updateStatus('Movie loaded successfully', 'connected');
+        showToast('Movie loaded successfully!');
+        console.log('🎬 Movie loaded, duration:', player.duration());
+      });
+    }
+
+    // Add native element fallback error diagnostics (in case Video.js not yet initialized)
+    (function(){
+      const el = document.getElementById('player');
+      if (!el) return;
+      el.addEventListener('error', () => {
+        try {
+          const src = el.currentSrc || el.src;
+          if (!src) return;
+          const m = src.match(/\/proxy\/([a-zA-Z0-9_-]+)/);
+          if (!m) return;
+          fetch(`/proxy-head/${m[1]}`).then(r=>r.json()).then(diag=>{
+            const diagBox = document.createElement('div');
+            diagBox.style.cssText='position:fixed;bottom:20px;left:20px;max-width:380px;background:rgba(30,0,0,0.88);color:#fff;padding:12px 14px;border:1px solid rgba(255,255,255,0.2);border-radius:10px;font:12px/1.4 ui-monospace,monospace;z-index:2000;white-space:pre-wrap;';
+            diagBox.textContent = 'Fallback video error diag:\nstatus:'+diag.status+'\nctype:'+(diag.headers&&diag.headers['content-type'])+'\nlooksHtml:'+diag.looksHtml+'\ncontainer:'+diag.containerGuess+'\nhex:'+diag.hexPreview;
+            document.body.appendChild(diagBox);
+            setTimeout(()=> diagBox.remove(), 12000);
+          }).catch(()=>{});
+        } catch(e){}
+      }, { once:false });
+    })();
 
     // Periodic time sync (every 5 seconds when playing)
     setInterval(() => {
-      if (!player.paused && !suppressLocal && !isBuffering && !isSeeking && movieLoaded) {
+      if (player && !player.paused() && !suppressLocal && !isBuffering && !isSeeking && movieLoaded) {
         socket.emit('control', { 
           type: 'timesync', 
-          time: parseFloat(player.currentTime.toFixed(2)),
+          time: parseFloat(player.currentTime().toFixed(2)),
           timestamp: Date.now()
         });
       }
     }, 5000);
 
     // Socket Event Handlers
+    // Socket debug helpers
+    function logSocket(event, info) {
+      console.log(`🔌[socket:${event}]`, info || '');
+    }
+
     socket.on('connect', () => {
+      logSocket('connect', { id: socket.id, transport: socket.io.engine.transport.name });
       updateStatus('Connected to server', 'connected');
       showToast('Connected to server');
-      console.log('✅ Connected to server');
+      // Listen for transport upgrades
+      socket.io.engine.on('upgrade', (transport) => {
+        logSocket('upgrade', transport.name);
+      });
+      // Heartbeat monitor
+      lastPong = Date.now();
     });
 
-    socket.on('disconnect', () => {
-      updateStatus('Disconnected from server', 'disconnected');
-      showToast('Disconnected from server', 'error');
-      console.log('❌ Disconnected from server');
+    socket.on('disconnect', (reason) => {
+      logSocket('disconnect', reason);
+      updateStatus(`Disconnected: ${reason}`, 'disconnected');
+    });
+
+    socket.on('connect_error', (err) => {
+      logSocket('connect_error', { message: err.message, description: err.description });
+      updateStatus('Connection error', 'disconnected');
+    });
+
+    socket.on('reconnect_attempt', (n) => logSocket('reconnect_attempt', n));
+    socket.on('reconnect_failed', () => logSocket('reconnect_failed'));
+    socket.on('reconnect', (n) => logSocket('reconnect', n));
+    socket.on('error', (e) => logSocket('error', e));
+    socket.on('pong', (latency) => {
+      lastPong = Date.now();
+      logSocket('pong', latency + 'ms');
     });
 
     socket.on('userCount', (count) => {
@@ -886,14 +1869,47 @@ If a video fails to load, the app will automatically try multiple URL formats to
         showToast('Friend shared a movie URL');
       }
     });
-    // COMPLETELY REWRITTEN: Better sync logic that handles seeking properly
+    // Video.js control sync logic
     socket.on('control', (msg) => {
-      if (!movieLoaded) return;
+      if (!movieLoaded || !player) return;
       
-      console.log(`📥 Received: ${msg.type} at ${msg.time}s from ${msg.from || 'server'}`);
-      
-      const timeDiff = Math.abs(player.currentTime - (msg.time || 0));
+      const currentTime = player.currentTime();
+      const timeDiff = Math.abs(currentTime - (msg.time || 0));
       const isLargeTimeDiff = timeDiff > SYNC_THRESHOLD;
+      const now = Date.now();
+      
+      // Ignore seeks that are too close to our own recent seeks (prevent loops)
+      if (msg.type === 'seek' && (now - lastSeekTime) < 1000) {
+        return;
+      }
+      
+      // Handle buffering events
+      if (msg.type === 'buffering') {
+        // Another user is buffering - pause our video to wait
+        if (!player.paused() && !isBuffering) {
+          suppressLocal = true;
+          player.pause();
+          updateStatus('Waiting for other users to buffer...', 'syncing');
+          setTimeout(() => { suppressLocal = false; }, 500);
+        }
+        return;
+      }
+      
+      if (msg.type === 'buffer-ready') {
+        // Another user finished buffering - check if we should resume
+        if (player.paused() && !isBuffering && statusEl.textContent.includes('Waiting for other users')) {
+          // Small delay to ensure everyone is ready
+          setTimeout(() => {
+            if (!isBuffering) {
+              suppressLocal = true;
+              player.play().catch(e => console.warn('Resume play failed:', e));
+              updateStatus('Resumed after buffering', 'connected');
+              setTimeout(() => { suppressLocal = false; }, 500);
+            }
+          }, 200);
+        }
+        return;
+      }
       
       // Set suppress flag BEFORE making changes
       suppressLocal = true;
@@ -901,13 +1917,18 @@ If a video fails to load, the app will automatically try multiple URL formats to
       try {
         switch(msg.type) {
           case 'play':
-            // Sync time if there's a significant difference
-            if (isLargeTimeDiff && timeDiff < 1800) { // Max 30 minutes
-              console.log(`🔄 Syncing time on play: ${timeDiff.toFixed(1)}s difference`);
-              player.currentTime = msg.time;
+            // Don't auto-play if we're buffering
+            if (isBuffering) {
+              updateStatus('Buffering... will resume when ready', 'syncing');
+              break;
             }
             
-            if (player.paused) {
+            // Sync time if there's a significant difference
+            if (isLargeTimeDiff && timeDiff < 1800) { // Max 30 minutes
+              player.currentTime(msg.time);
+            }
+            
+            if (player.paused()) {
               player.play().catch(e => console.warn('Play failed:', e));
             }
             updateStatus('Playing (synced)', 'connected');
@@ -917,11 +1938,10 @@ If a video fails to load, the app will automatically try multiple URL formats to
           case 'pause':
             // Sync time if there's a significant difference
             if (isLargeTimeDiff && timeDiff < 1800) {
-              console.log(`🔄 Syncing time on pause: ${timeDiff.toFixed(1)}s difference`);
-              player.currentTime = msg.time;
+              player.currentTime(msg.time);
             }
             
-            if (!player.paused) {
+            if (!player.paused()) {
               player.pause();
             }
             updateStatus('Paused (synced)', 'connected');
@@ -929,20 +1949,24 @@ If a video fails to load, the app will automatically try multiple URL formats to
             break;
             
           case 'seek':
-            // ALWAYS sync on explicit seek commands - this is the key fix
-            console.log(`🎯 Explicit seek to: ${msg.time}s (current: ${player.currentTime}s)`);
-            if (Math.abs(player.currentTime - msg.time) > 0.5) { // Only seek if meaningful difference
-              player.currentTime = msg.time;
+            // Only apply seek if it's significantly different and not our own echo
+            if (timeDiff > 1.0) { // Only apply seeks with meaningful difference
+              // Clear any pending local seek
+              if (seekTimeout) {
+                clearTimeout(seekTimeout);
+                seekTimeout = null;
+              }
+              
+              player.currentTime(msg.time);
+              updateStatus('Remote seek applied', 'syncing');
+              updateLastSync();
             }
-            updateStatus('Seeking (synced)', 'syncing');
-            updateLastSync();
             break;
             
           case 'timesync':
             // Only auto-sync if the difference is reasonable and we're playing
-            if (isLargeTimeDiff && !player.paused && timeDiff < 30 && !isSeeking) {
-              console.log(`🔄 Auto-sync: ${timeDiff.toFixed(1)}s difference`);
-              player.currentTime = msg.time;
+            if (isLargeTimeDiff && !player.paused() && timeDiff < 30 && !isSeeking && !isBuffering) {
+              player.currentTime(msg.time);
               updateStatus('Auto-synced', 'connected');
               updateLastSync();
             }
@@ -952,11 +1976,18 @@ If a video fails to load, the app will automatically try multiple URL formats to
         console.error('Error handling control message:', error);
       }
       
-      // LONGER suppress time for seek operations, shorter for others
-      const suppressTime = msg.type === 'seek' ? 1500 : 800;
+      // Dynamic suppress time based on message type and current state
+      let suppressTime;
+      if (msg.type === 'seek') {
+        suppressTime = 1500; // Shorter for Video.js (it handles seeks better)
+      } else if (isSeeking) {
+        suppressTime = 800;
+      } else {
+        suppressTime = 500;
+      }
+      
       setTimeout(() => { 
         suppressLocal = false; 
-        console.log(`🔓 suppressLocal reset after ${suppressTime}ms`);
       }, suppressTime);
     });
 
@@ -1013,26 +2044,27 @@ If a video fails to load, the app will automatically try multiple URL formats to
 
     // Control Functions
     function forceSyncTime() {
-      if (!movieLoaded) {
+      if (!movieLoaded || !player) {
         showToast('Please load a movie first!', 'error');
         return;
       }
-      emitControl('seek', player.currentTime, true);
+      emitControl('seek', player.currentTime(), true);
       updateStatus('Force sync sent', 'syncing');
       showToast('Force sync sent to all users');
       setTimeout(() => updateStatus('Ready', 'connected'), 1500);
     }
 
     function toggleFullscreen() {
-      if (!movieLoaded) {
+      if (!movieLoaded || !player) {
         showToast('Please load a movie first!', 'error');
         return;
       }
       
-      if (player.requestFullscreen) {
-        player.requestFullscreen().catch(e => console.warn('Fullscreen failed:', e));
-      } else if (player.webkitRequestFullscreen) {
-        player.webkitRequestFullscreen();
+      // Video.js has built-in fullscreen support
+      if (player.isFullscreen()) {
+        player.exitFullscreen();
+      } else {
+        player.requestFullscreen();
       }
     }
 
@@ -1065,29 +2097,90 @@ If a video fails to load, the app will automatically try multiple URL formats to
       });
     }
 
-    // Initialize
-    console.log('🎬 Movie Sync Client initialized');
-    updateStatus('Connecting...', 'syncing');
-
-    // Load movie from URL parameter if provided
-    const urlParams = new URLSearchParams(window.location.search);
-    const movieUrl = urlParams.get('movie');
-    if (movieUrl) {
-      movieUrlInput.value = decodeURIComponent(movieUrl);
-      setTimeout(() => loadMovieFromUrl(), 1000);
+    function showMovieOverlay() {
+      if (player) {
+        try {
+          player.pause();
+          if (player.remoteTextTracks) {
+            const tracks = player.remoteTextTracks();
+            for (let i = tracks.length - 1; i >= 0; i--) {
+              try { player.removeRemoteTextTrack(tracks[i]); } catch(e) {}
+            }
+          }
+          try { player.src([]); } catch(e) {}
+          if (player.reset) { try { player.reset(); } catch(e) {} }
+        } catch(e) {
+          console.warn('Player reset issue:', e.message);
+        }
+      }
+      movieLoaded = false;
+      isSeeking = false;
+      suppressLocal = false;
+      movieUrlInput.value = '';
+      const sub = document.getElementById('subtitleInput');
+      if (sub) sub.value='';
+      videoOverlay.classList.add('show');
+      setTimeout(()=> movieUrlInput.focus(), 200);
+      updateStatus('Ready to load a movie', 'connected');
+      showToast('Overlay opened. Paste a movie URL.');
     }
 
-    // Auto-focus on movie URL input when overlay is shown
-    const observer = new MutationObserver((mutations) => {
-      mutations.forEach((mutation) => {
-        if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
-          if (videoOverlay.classList.contains('show') && !movieLoaded) {
-            setTimeout(() => movieUrlInput.focus(), 300);
+    // Initialize everything when page loads - moved to function for login control
+    function initializeApp() {
+      console.log('🎬 Movie Sync Client loading...');
+      updateStatus('Loading...', 'syncing');
+      
+      console.log('🎬 Initializing Movie Sync Client');
+      updateStatus('Connecting...', 'syncing');
+      
+      // Try to initialize Video.js player with delay
+      setTimeout(() => {
+        initializePlayer();
+      }, 500);
+      
+      // Load movie from URL parameter if provided
+      const urlParams = new URLSearchParams(window.location.search);
+      const movieUrl = urlParams.get('movie');
+      if (movieUrl) {
+        movieUrlInput.value = decodeURIComponent(movieUrl);
+        setTimeout(() => loadMovieFromUrl(), 3000); // Wait for player to be ready
+      }
+
+      // Auto-focus on movie URL input when overlay is shown
+      const observer = new MutationObserver((mutations) => {
+        mutations.forEach((mutation) => {
+          if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
+            if (videoOverlay.classList.contains('show') && !movieLoaded) {
+              setTimeout(() => movieUrlInput.focus(), 300);
+            }
           }
-        }
+        });
       });
-    });
-    observer.observe(videoOverlay, { attributes: true });
+      observer.observe(videoOverlay, { attributes: true });
+    }
+
+    function loadLocalFile() {
+  // Local file loading removed (feature simplified)
+    }
+
+    function toggleBasicPlayer() {
+      const useBasic = document.getElementById('basicModeToggle').checked;
+      if (!player) return;
+      if (useBasic) {
+        console.log('🔧 Switching to basic player mode (destroying Video.js)');
+        try { player.dispose(); } catch(e) { console.warn('Dispose failed', e); }
+        player = null;
+        // Native element keeps same id 'player'
+        updateStatus('Basic player mode', 'connected');
+      } else {
+        console.log('🔧 Re-initializing Video.js player');
+        initializePlayer();
+      }
+    }
+
+    function uploadAndConvert() {
+  // Conversion feature removed (UI simplified)
+    }
   </script>
 </body>
 </html>

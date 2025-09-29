@@ -1,9 +1,51 @@
+require('dotenv').config();
 const express = require("express");
 const http = require("http");
-const https = require("https");
 const { Server } = require("socket.io");
 const path = require("path");
-const { URL } = require("url");
+const cors = require('cors');
+const axios = require('axios');
+const { wrapper: wrapAxios } = require('axios-cookiejar-support');
+const { CookieJar } = require('tough-cookie');
+const { GoogleAuth } = require('google-auth-library');
+const fs = require('fs');
+const { spawn } = require('child_process');
+const multer = require('multer');
+const os = require('os');
+const crypto = require('crypto');
+
+// --- Transcode Job Management ---
+// Simple in-memory job registry (ephemeral; lost on restart)
+const transcodeJobs = new Map();
+function createJob(meta) {
+  const id = crypto.randomBytes(8).toString('hex');
+  const job = {
+    id,
+    status: 'queued', // queued | processing | done | error
+    created: Date.now(),
+    updated: Date.now(),
+    input: meta,
+    outputUrl: null,
+    progress: 0,
+    fps: null,
+    speed: null,
+    eta: null,
+    logTail: [],
+    error: null,
+    tookMs: null
+  };
+  transcodeJobs.set(id, job);
+  return job;
+}
+function updateJob(id, patch) {
+  const job = transcodeJobs.get(id); if (!job) return;
+  Object.assign(job, patch, { updated: Date.now() });
+}
+// Periodic cleanup (jobs older than 6h)
+setInterval(()=>{
+  const cutoff = Date.now() - 6*60*60*1000;
+  for (const [id, j] of transcodeJobs) if (j.created < cutoff) transcodeJobs.delete(id);
+}, 60*60*1000);
 
 const app = express();
 const server = http.createServer(app);
@@ -18,7 +60,22 @@ const io = new Server(server, {
 });
 
 // Serve static files from public directory
+app.use(cors()); // enable CORS globally
 app.use(express.static(path.join(__dirname, "public")));
+// Directory for transcoded files
+const TRANSCODE_DIR = path.join(__dirname, 'transcodes');
+if (!fs.existsSync(TRANSCODE_DIR)) fs.mkdirSync(TRANSCODE_DIR);
+app.use('/transcodes', express.static(TRANSCODE_DIR, { maxAge: '1h' }));
+
+// Multer setup for uploads (memory or temp disk)
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, os.tmpdir()),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname) || '.dat';
+    cb(null, 'upload_' + Date.now() + '_' + crypto.randomBytes(4).toString('hex') + ext);
+  }
+});
+const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 * 1024 } }); // 5GB limit
 
 // Basic middleware
 app.use(express.json());
@@ -36,305 +93,413 @@ let movieRoom = {
   movieUrl: process.env.MOVIE_URL || ""
 };
 
-// Google Drive Proxy Route - WITH RANGE REQUEST SUPPORT FOR VIDEO SEEKING
-app.get('/proxy/:fileId', (req, res) => {
-  const fileId = req.params.fileId;
-  
-  const urls = [
-    `https://drive.google.com/uc?export=download&id=${fileId}`,
-    `https://drive.usercontent.google.com/download?id=${fileId}&export=download`,
-    `https://docs.google.com/uc?export=download&id=${fileId}`,
-    `https://drive.google.com/file/d/${fileId}/preview`
+// --- Google Drive Proxy with Cookie Jar + Confirm Flow ---
+const driveClient = wrapAxios(axios.create({
+  maxRedirects: 5,
+  validateStatus: s => s >= 200 && s < 400
+}));
+
+function buildJar() { return new CookieJar(); }
+
+function extractConfirmTokens(html) {
+  const tokens = new Set();
+  if (!html) return [];
+  // Normalize quotes just for simpler pattern checks (don't mutate original for logs)
+  const src = html;
+  // Patterns observed in Drive interstitials:
+  // 1. href="/uc?export=download&confirm=XXXX&id=..."
+  // 2. action="/uc?export=download&confirm=XXXX&id=..."
+  // 3. name="confirm" value="XXXX"
+  // 4. confirm=XXXX (end of URL) without trailing &
+  const regexes = [
+    /confirm=([a-zA-Z0-9-_]{3,})&/g,
+    /confirm=([a-zA-Z0-9-_]{3,})(?=["'&])/g,
+    /name=\"confirm\"\s+value=\"([a-zA-Z0-9-_]{3,})\"/g,
+    /name='confirm'\s+value='([a-zA-Z0-9-_]{3,})'/g
   ];
-  
-  console.log(`🔄 Proxying Google Drive file: ${fileId}`);
-  
-  // Extract Range header from client request for video seeking
-  const range = req.headers.range;
-  console.log(`📊 Range request: ${range || 'No range (full file)'}`);
-  
-  // Set CORS headers
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET');
-  res.header('Access-Control-Allow-Headers', 'Range, Content-Range');
-  res.header('Accept-Ranges', 'bytes');
-  
-  let urlIndex = 0;
-  let responseHandled = false;
-  
-  // Set response timeout to 10 minutes for large files
-  res.setTimeout(600000, () => {
-    console.log(`⏱️ Response timeout (10min) for file: ${fileId}`);
-    if (!responseHandled) {
-      responseHandled = true;
-      res.status(408).json({ error: 'Request timeout' });
+  for (const rx of regexes) {
+    let m; while ((m = rx.exec(src)) !== null) {
+      tokens.add(m[1]);
     }
-  });
-  
-  function tryNextUrl() {
-    if (responseHandled) return;
-    
-    if (urlIndex >= urls.length) {
-      console.error(`❌ All proxy attempts failed for file: ${fileId}`);
-      if (!responseHandled) {
-        responseHandled = true;
-        return res.status(404).json({ 
-          error: 'All proxy attempts failed',
-          fileId: fileId,
-          attempts: urls.length
-        });
-      }
+  }
+  // Occasionally very short (1 char) matches are false positives; filtered by {3,}
+  return [...tokens];
+}
+
+async function initialHtmlFetch(url, jar, headers) {
+  const r = await driveClient.get(url, { headers, jar, withCredentials: true, responseType: 'text' });
+  return { status: r.status, headers: r.headers, html: r.data };
+}
+
+async function attemptVideoStream(url, jar, headers, range) {
+  const h = { ...headers };
+  if (range) h.Range = range;
+  const r = await driveClient.get(url, { headers: h, jar, withCredentials: true, responseType: 'stream', validateStatus: s => [200,206].includes(s) });
+  return r;
+}
+
+function classifyHtml(html) {
+  if (!html) return 'empty';
+  const lower = html.toLowerCase();
+  if (lower.includes('quota exceeded')) return 'quota_exceeded';
+  if (lower.includes('access denied') || lower.includes('you need access')) return 'access_denied';
+  if (lower.includes('virus scan warning')) return 'virus_scan_interstitial';
+  if (lower.includes('download anyway')) return 'needs_confirm';
+  return 'generic_html';
+}
+
+// --- Google Drive API (Service Account) helper ---
+// Expects a JSON key file path via env GOOGLE_APPLICATION_CREDENTIALS or inline credentials in env DRIVE_SA_JSON
+let driveAuthClient = null;
+async function ensureServiceAccountMaterialized() {
+  // Precedence: explicit file path > inline JSON env var name variants
+  if (process.env.GOOGLE_APPLICATION_CREDENTIALS && fs.existsSync(process.env.GOOGLE_APPLICATION_CREDENTIALS)) return;
+  const inlineJson = process.env.GOOGLE_SERVICE_ACCOUNT_JSON || process.env.DRIVE_SA_JSON;
+  if (inlineJson) {
+    try {
+      const parsed = JSON.parse(inlineJson);
+      if (!parsed.private_key || !parsed.client_email) throw new Error('incomplete_service_account_json');
+      const keyPath = path.join(os.tmpdir(), 'drive_sa_key.json');
+      fs.writeFileSync(keyPath, JSON.stringify(parsed), { encoding: 'utf8', mode: 0o600 });
+      process.env.GOOGLE_APPLICATION_CREDENTIALS = keyPath;
+    } catch (e) {
+      console.error('Invalid inline service account JSON:', e.message);
+    }
+  }
+}
+async function getDriveAuthClient(scopes = ['https://www.googleapis.com/auth/drive.readonly']) {
+  if (driveAuthClient) return driveAuthClient;
+  await ensureServiceAccountMaterialized();
+  if (!process.env.GOOGLE_APPLICATION_CREDENTIALS) throw new Error('no_service_account_credentials');
+  const auth = new GoogleAuth({ scopes });
+  driveAuthClient = await auth.getClient();
+  return driveAuthClient;
+}
+
+async function streamViaDriveApi(fileId, rangeHeader, res) {
+  try {
+    const client = await getDriveAuthClient();
+    const base = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+    const headers = {};
+    if (rangeHeader) headers.Range = rangeHeader;
+  // Robust: use getRequestHeaders (official) to avoid token shape ambiguity
+  const reqHdrs = await client.getRequestHeaders();
+  const authH = reqHdrs.Authorization || reqHdrs.authorization;
+  if (!authH || !authH.startsWith('Bearer ')) throw new Error('missing_bearer_header');
+  const token = authH.substring(7);
+    const apiResp = await axios.get(base, {
+      headers: { ...headers, Authorization: `Bearer ${token}` },
+      responseType: 'stream',
+      validateStatus: s => [200,206].includes(s)
+    });
+    // Content type may not always be present; attempt fallback
+    const ctype = apiResp.headers['content-type'] || 'video/mp4';
+    if (apiResp.headers['content-range']) res.status(206).set('Content-Range', apiResp.headers['content-range']);
+    if (apiResp.headers['content-length']) res.set('Content-Length', apiResp.headers['content-length']);
+    res.set({ 'Content-Type': ctype, 'Accept-Ranges': 'bytes', 'X-Proxy-Source': 'drive_api' });
+    apiResp.data.on('error', err => {
+      console.error('Drive API stream error', err.message);
+      if (!res.headersSent) res.status(500).end();
+    });
+    apiResp.data.pipe(res);
+    return true;
+  } catch (e) {
+    const status = e.response?.status;
+    const bodySnippet = e.response?.data ? (typeof e.response.data === 'string' ? e.response.data.slice(0,200) : JSON.stringify(e.response.data).slice(0,200)) : null;
+    console.warn('Drive API fallback failed:', e.message, 'status=', status, 'snippet=', bodySnippet);
+    if (!res.headersSent) {
+      res.set('X-Drive-Error', String(status||'unknown'));
+    }
+    return false;
+  }
+}
+
+app.get('/proxy/:fileId', async (req, res) => {
+  const { fileId } = req.params;
+  const range = req.headers.range;
+  console.log(`🔄 Proxy request fileId=${fileId} range=${range || 'none'}`);
+  const primaryMode = (process.env.DRIVE_PRIMARY_MODE || 'api').toLowerCase(); // 'api' | 'html'
+
+  // Helper to run HTML confirm flow
+  const runHtmlFlow = async () => {
+    const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
+    const ACCEPT = 'video/*;q=0.9,*/*;q=0.8';
+    const baseHeaders = { 'User-Agent': UA, 'Accept': ACCEPT }; 
+    const jar = buildJar();
+    const candidates = [
+      { url: `https://drive.usercontent.google.com/download?id=${fileId}&export=download`, tag: 'usercontent' },
+      { url: `https://drive.google.com/uc?export=download&id=${fileId}`, tag: 'uc' }
+    ];
+    let lastIssue = null;
+    for (const cand of candidates) {
+      try {
+        const htmlResp = await initialHtmlFetch(cand.url, jar, baseHeaders);
+        const ctype = (htmlResp.headers['content-type']||'').toLowerCase();
+        const isHtml = ctype.includes('text/html');
+        let streamUrl = cand.url;
+        let confirmTokens = [];
+        if (isHtml) {
+          confirmTokens = extractConfirmTokens(htmlResp.html);
+          if (confirmTokens.length === 0) {
+            const htmlClass = classifyHtml(htmlResp.html);
+            lastIssue = htmlClass;
+            console.warn(`⚠️ HTML interstitial (${htmlClass}) without token for ${cand.tag}`);
+            continue;
+          }
+          let success = false; let lastTokenErr = null;
+          for (const token of confirmTokens) {
+            const confirmUrl = `https://drive.google.com/uc?export=download&confirm=${token}&id=${fileId}`;
+            try {
+              const probe = await driveClient.get(confirmUrl, { headers: baseHeaders, jar, withCredentials: true, responseType: 'stream', validateStatus: s => [200,206].includes(s) });
+              const sc = (probe.headers['content-type']||'').toLowerCase();
+              if (sc.startsWith('text/html')) {
+                lastTokenErr = 'html_after_confirm';
+                probe.data.destroy();
+                continue;
+              }
+              probe.data.destroy();
+              streamUrl = confirmUrl;
+              success = true;
+              console.log(`🔐 Confirm token accepted (${token}) source=${cand.tag}`);
+              break;
+            } catch(e) { lastTokenErr = e.message; continue; }
+          }
+          if (!success) { lastIssue = lastTokenErr || 'confirm_failed'; continue; }
+        }
+        const streamResp = await attemptVideoStream(streamUrl, jar, baseHeaders, range);
+        const streamType = (streamResp.headers['content-type']||'').toLowerCase();
+        if (streamType.startsWith('text/html')) { lastIssue = 'html_stream'; streamResp.data.destroy(); continue; }
+        if (streamResp.headers['content-range']) res.status(206).set('Content-Range', streamResp.headers['content-range']);
+        res.set('Content-Type', streamResp.headers['content-type'] || 'video/mp4');
+        if (streamResp.headers['content-length']) res.set('Content-Length', streamResp.headers['content-length']);
+        res.set({ 'Accept-Ranges': 'bytes', 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Range', 'X-Proxy-Source': cand.tag, 'X-Proxy-Confirmed': String(isHtml), 'X-Proxy-Tokens': confirmTokens.join(',') });
+        console.log(`✅ Proxy stream start (HTML flow) source=${cand.tag} range=${!!range} type=${streamResp.headers['content-type']}`);
+        streamResp.data.on('error', err => { console.error('❌ Stream error', err.message); if (!res.headersSent) res.status(500).end(); });
+        streamResp.data.pipe(res);
+        return true;
+      } catch (e) { lastIssue = e.message; console.warn(`⚠️ HTML flow candidate failure source=${cand.tag} err=${e.message}`); continue; }
+    }
+    return { ok: false, issue: lastIssue };
+  };
+
+  const apiFirst = primaryMode === 'api';
+  if (apiFirst) {
+    // Attempt Drive API immediately; fallback to HTML confirm flow on failure
+    if (process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.DRIVE_SA_JSON || process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
+      const ok = await streamViaDriveApi(fileId, range, res);
+      if (ok) return;
+      console.log('🔁 API failed -> attempting HTML confirm flow');
+      const htmlResult = await runHtmlFlow();
+      if (htmlResult === true) return; // already streamed
+      if (!res.headersSent) return res.status(502).json({ error: 'proxy_failed', fileId, issue: htmlResult.issue || 'api_and_html_failed', mode:'api_primary' });
+      return; // stream already attempted
+    } else {
+      console.log('ℹ️ No service account creds present, falling back to HTML confirm flow');
+      const htmlResult = await runHtmlFlow();
+      if (htmlResult === true) return;
+      if (!res.headersSent) return res.status(502).json({ error: 'proxy_failed', fileId, issue: htmlResult.issue || 'html_failed', mode:'api_primary_no_creds' });
       return;
     }
-    
-    const currentUrl = urls[urlIndex];
-    console.log(`Trying proxy URL ${urlIndex + 1}/${urls.length}: ${currentUrl}`);
-    
-    const urlObj = new URL(currentUrl);
-    
-    // Build headers - INCLUDE RANGE HEADER for video seeking
-    const proxyHeaders = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-      'Accept': 'video/*,*/*;q=0.9',
-      'Accept-Encoding': 'identity',
-      'Connection': 'keep-alive',
-      'Cache-Control': 'no-cache'
-    };
-    
-    // CRITICAL: Forward the Range header to Google Drive for seeking
-    if (range) {
-      proxyHeaders['Range'] = range;
-      console.log(`🎯 Forwarding range: ${range}`);
+  } else {
+    // HTML first mode (legacy) then API fallback
+    const htmlResult = await runHtmlFlow();
+    if (htmlResult === true) return; // success
+    if (process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.DRIVE_SA_JSON || process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
+      console.log('🔁 HTML flow failed -> trying API fallback');
+      const ok = await streamViaDriveApi(fileId, range, res);
+      if (ok) return;
+      if (!res.headersSent) return res.status(502).json({ error: 'proxy_failed', fileId, issue: htmlResult.issue || 'html_and_api_failed', mode:'html_primary' });
+    } else {
+      if (!res.headersSent) return res.status(502).json({ error: 'proxy_failed', fileId, issue: htmlResult.issue || 'html_failed_no_api_creds', mode:'html_primary' });
     }
-    
-    const options = {
-      hostname: urlObj.hostname,
-      path: urlObj.pathname + urlObj.search,
-      method: 'GET',
-      headers: proxyHeaders,
-      timeout: 60000
-    };
-    
-    const protocol = urlObj.protocol === 'https:' ? https : http;
-    
-    const proxyReq = protocol.request(options, (proxyRes) => {
-      if (responseHandled) return;
-      
-      console.log(`Proxy response: ${proxyRes.statusCode} for URL ${urlIndex + 1}`);
-      
-      // Handle both 200 (full content) and 206 (partial content) responses
-      if (proxyRes.statusCode === 200 || proxyRes.statusCode === 206) {
-        console.log(`✅ Proxy success for file: ${fileId} using URL ${urlIndex + 1} (${proxyRes.statusCode})`);
-        
-        if (!responseHandled) {
-          responseHandled = true;
-          
-          // Build response headers
-          const responseHeaders = {
-            'Access-Control-Allow-Origin': '*',
-            'Accept-Ranges': 'bytes',
-            'Cache-Control': 'public, max-age=86400'
-          };
-          
-          // Copy important headers from Google Drive response
-          if (proxyRes.headers['content-type']) {
-            responseHeaders['Content-Type'] = proxyRes.headers['content-type'];
-          }
-          
-          if (proxyRes.headers['content-length']) {
-            responseHeaders['Content-Length'] = proxyRes.headers['content-length'];
-            console.log(`📏 Content length: ${Math.round(proxyRes.headers['content-length'] / 1024 / 1024)}MB`);
-          }
-          
-          // CRITICAL: Forward Content-Range header for video seeking
-          if (proxyRes.headers['content-range']) {
-            responseHeaders['Content-Range'] = proxyRes.headers['content-range'];
-            console.log(`🎯 Content-Range: ${proxyRes.headers['content-range']}`);
-          }
-          
-          // Use the same status code as Google Drive (200 or 206)
-          res.writeHead(proxyRes.statusCode, responseHeaders);
-          
-          // Handle streaming with progress tracking
-          let bytesStreamed = 0;
-          const startTime = Date.now();
-          
-          proxyRes.on('data', (chunk) => {
-            bytesStreamed += chunk.length;
-            
-            // Log progress every 10MB for full downloads only
-            if (!range && bytesStreamed % (10 * 1024 * 1024) < chunk.length) {
-              console.log(`📊 Streamed ${Math.round(bytesStreamed / 1024 / 1024)}MB for ${fileId}`);
-            }
-          });
-          
-          proxyRes.on('end', () => {
-            const duration = (Date.now() - startTime) / 1000;
-            if (range) {
-              console.log(`✅ Range request completed: ${fileId} (${range}) in ${duration}s`);
-            } else {
-              console.log(`✅ Full streaming completed: ${fileId} (${Math.round(bytesStreamed / 1024 / 1024)}MB in ${duration}s)`);
-            }
-          });
-          
-          proxyRes.on('error', (err) => {
-            console.error(`❌ Streaming error for ${fileId}:`, err.message);
-            if (!res.headersSent) {
-              res.status(500).end();
-            }
-          });
-          
-          // Pipe the response
-          proxyRes.pipe(res);
-        }
-        
-      } else if (proxyRes.statusCode >= 300 && proxyRes.statusCode < 400) {
-        // Handle redirects
-        const redirectUrl = proxyRes.headers.location;
-        if (redirectUrl && !responseHandled) {
-          console.log(`🔄 Redirecting to: ${redirectUrl}`);
-          
-          const redirectUrlObj = new URL(redirectUrl);
-          
-          // Build redirect headers - INCLUDE RANGE HEADER for seeking
-          const redirectHeaders = {
-            'User-Agent': proxyHeaders['User-Agent'],
-            'Accept': proxyHeaders['Accept'],
-            'Cache-Control': 'no-cache'
-          };
-          
-          // CRITICAL: Forward the Range header to redirect URL for seeking
-          if (range) {
-            redirectHeaders['Range'] = range;
-            console.log(`🎯 Forwarding range to redirect: ${range}`);
-          }
-          
-          const redirectOptions = {
-            hostname: redirectUrlObj.hostname,
-            path: redirectUrlObj.pathname + redirectUrlObj.search,
-            method: 'GET',
-            headers: redirectHeaders,
-            timeout: 60000
-          };
-          
-          const redirectProtocol = redirectUrlObj.protocol === 'https:' ? https : http;
-          
-          const redirectReq = redirectProtocol.request(redirectOptions, (redirectRes) => {
-            if (responseHandled) return;
-            
-            // Handle both 200 and 206 for redirects
-            if (redirectRes.statusCode === 200 || redirectRes.statusCode === 206) {
-              console.log(`✅ Redirect success for file: ${fileId} (${redirectRes.statusCode})`);
-              
-              if (!responseHandled) {
-                responseHandled = true;
-                
-                const redirectResponseHeaders = {
-                  'Access-Control-Allow-Origin': '*',
-                  'Accept-Ranges': 'bytes',
-                  'Cache-Control': 'public, max-age=86400'
-                };
-                
-                // Copy headers from Google Drive redirect response
-                if (redirectRes.headers['content-type']) {
-                  redirectResponseHeaders['Content-Type'] = redirectRes.headers['content-type'];
-                }
-                
-                if (redirectRes.headers['content-length']) {
-                  redirectResponseHeaders['Content-Length'] = redirectRes.headers['content-length'];
-                  console.log(`📏 Redirect content length: ${Math.round(redirectRes.headers['content-length'] / 1024 / 1024)}MB`);
-                }
-                
-                // CRITICAL: Forward Content-Range header for video seeking
-                if (redirectRes.headers['content-range']) {
-                  redirectResponseHeaders['Content-Range'] = redirectRes.headers['content-range'];
-                  console.log(`🎯 Redirect Content-Range: ${redirectRes.headers['content-range']}`);
-                }
-                
-                // Use the same status code as Google Drive redirect (200 or 206)
-                res.writeHead(redirectRes.statusCode, redirectResponseHeaders);
-                
-                // Handle redirect streaming with progress
-                let redirectBytesStreamed = 0;
-                const redirectStartTime = Date.now();
-                
-                redirectRes.on('data', (chunk) => {
-                  redirectBytesStreamed += chunk.length;
-                  
-                  // Log progress for full downloads only
-                  if (!range && redirectBytesStreamed % (10 * 1024 * 1024) < chunk.length) {
-                    console.log(`📊 Redirect streamed ${Math.round(redirectBytesStreamed / 1024 / 1024)}MB for ${fileId}`);
-                  }
-                });
-                
-                redirectRes.on('end', () => {
-                  const redirectDuration = (Date.now() - redirectStartTime) / 1000;
-                  if (range) {
-                    console.log(`✅ Redirect range completed: ${fileId} (${range}) in ${redirectDuration}s`);
-                  } else {
-                    console.log(`✅ Redirect full streaming completed: ${fileId} (${Math.round(redirectBytesStreamed / 1024 / 1024)}MB in ${redirectDuration}s)`);
-                  }
-                });
-                
-                redirectRes.on('error', (err) => {
-                  console.error(`❌ Redirect streaming error for ${fileId}:`, err.message);
-                });
-                
-                redirectRes.pipe(res);
-              }
-            } else {
-              console.warn(`❌ Redirect failed with status ${redirectRes.statusCode}`);
-              urlIndex++;
-              setTimeout(tryNextUrl, 1000);
-            }
-          });
-          
-          redirectReq.on('error', (err) => {
-            console.error(`❌ Redirect request error:`, err.message);
-            urlIndex++;
-            setTimeout(tryNextUrl, 1000);
-          });
-          
-          redirectReq.on('timeout', () => {
-            console.error(`⏱️ Redirect connection timeout`);
-            redirectReq.destroy();
-            urlIndex++;
-            setTimeout(tryNextUrl, 1000);
-          });
-          
-          redirectReq.end();
-        } else {
-          urlIndex++;
-          setTimeout(tryNextUrl, 1000);
-        }
-      } else {
-        console.warn(`❌ Proxy failed with status ${proxyRes.statusCode} for URL ${urlIndex + 1}`);
-        urlIndex++;
-        setTimeout(tryNextUrl, 1000);
-      }
-    });
-    
-    proxyReq.on('error', (err) => {
-      console.error(`❌ Proxy error for URL ${urlIndex + 1}:`, err.message);
-      if (!responseHandled) {
-        urlIndex++;
-        setTimeout(tryNextUrl, 1000);
-      }
-    });
-    
-    proxyReq.on('timeout', () => {
-      console.error(`⏱️ Proxy connection timeout for URL ${urlIndex + 1}`);
-      proxyReq.destroy();
-      if (!responseHandled) {
-        urlIndex++;
-        setTimeout(tryNextUrl, 1000);
-      }
-    });
-    
-    proxyReq.end();
   }
-  
-  tryNextUrl();
+});
+
+// Direct Drive API route (requires service account credentials)
+app.get('/proxy-api/:fileId', async (req, res) => {
+  const { fileId } = req.params;
+  const range = req.headers.range;
+  try { await ensureServiceAccountMaterialized(); } catch(e) {}
+  if (!(process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.GOOGLE_SERVICE_ACCOUNT_JSON || process.env.DRIVE_SA_JSON)) {
+    return res.status(400).json({ error: 'no_credentials', detail: 'Provide GOOGLE_SERVICE_ACCOUNT_JSON inline or GOOGLE_APPLICATION_CREDENTIALS path' });
+  }
+  const ok = await streamViaDriveApi(fileId, range, res);
+  if (!ok && !res.headersSent) {
+    res.status(502).json({ error: 'drive_api_failed', hint: '401 usually means file not shared with service account or scope missing' });
+  }
+});
+
+// Drive file metadata (checks permission) without downloading
+app.get('/drive-file-meta/:fileId', async (req, res) => {
+  const { fileId } = req.params;
+  try {
+    const client = await getDriveAuthClient(['https://www.googleapis.com/auth/drive.readonly']);
+    const token = await client.getAccessToken();
+    const metaResp = await axios.get(`https://www.googleapis.com/drive/v3/files/${fileId}?fields=id,name,mimeType,size,owners,permissions`, {
+      headers: { Authorization: `Bearer ${token}` },
+      validateStatus: s => s >=200 && s < 500
+    });
+    res.status(metaResp.status).json({ status: metaResp.status, data: metaResp.data });
+  } catch (e) {
+    res.status(500).json({ error: 'meta_failed', detail: e.message });
+  }
+});
+
+// Attempt credential test at startup (async, non-blocking)
+(async () => {
+  try {
+    await ensureServiceAccountMaterialized();
+    if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+      const c = await getDriveAuthClient();
+      const token = await c.getAccessToken();
+      console.log('🔐 Drive auth token acquired (length:', String(token).length, ')');
+    } else {
+      console.log('ℹ️ No service account credentials present at startup');
+    }
+  } catch (e) {
+    console.warn('⚠️ Startup Drive auth check failed:', e.message);
+  }
+})();
+
+// Credential presence status (no secrets returned)
+app.get('/auth-status', async (req, res) => {
+  const inline = !!(process.env.GOOGLE_SERVICE_ACCOUNT_JSON || process.env.DRIVE_SA_JSON);
+  const filePath = process.env.GOOGLE_APPLICATION_CREDENTIALS || null;
+  let fileExists = false;
+  if (filePath) { try { fileExists = fs.existsSync(filePath); } catch(e) {} }
+  res.json({
+    inlineProvided: inline,
+    credentialFilePathSet: !!filePath,
+    credentialFileExists: fileExists,
+    readyForDriveApi: inline || (filePath && fileExists)
+  });
+});
+
+// Debug token acquisition and scopes
+app.get('/auth-debug', async (req, res) => {
+  try {
+    const client = await getDriveAuthClient(['https://www.googleapis.com/auth/drive.readonly']);
+    const hdrs = await client.getRequestHeaders();
+    const authH = hdrs.Authorization || hdrs.authorization;
+    const token = authH && authH.startsWith('Bearer ') ? authH.substring(7) : null;
+    res.json({ ok: true, tokenSample: token ? token.slice(0,25)+'...' : null, tokenLength: token ? token.length : 0, headerPresent: !!authH });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Permissions listing route
+app.get('/drive-file-perms/:fileId', async (req, res) => {
+  const { fileId } = req.params;
+  try {
+    const client = await getDriveAuthClient([
+      'https://www.googleapis.com/auth/drive.readonly',
+      'https://www.googleapis.com/auth/drive.metadata.readonly'
+    ]);
+    const hdrs = await client.getRequestHeaders();
+    const authH = hdrs.Authorization || hdrs.authorization;
+    if (!authH) return res.status(500).json({ error: 'no_auth_header' });
+    const token = authH.replace(/^Bearer\s+/i,'');
+    const permResp = await axios.get(`https://www.googleapis.com/drive/v3/files/${fileId}?fields=permissions(id,emailAddress,role,type,displayName)`, {
+      headers: { Authorization: `Bearer ${token}` },
+      validateStatus: s => s < 500
+    });
+    res.status(permResp.status).json({ 
+      status: permResp.status,
+      permissions: permResp.data.permissions || [],
+      file: {
+        id: permResp.data.id,
+        name: permResp.data.name,
+        shared: permResp.data.shared,
+        owners: permResp.data.owners,
+        permissionIds: permResp.data.permissionIds
+      }
+    });
+  } catch (e) {
+    res.status(500).json({ error: 'perm_list_failed', detail: e.message });
+  }
+});
+
+// Lightweight probe: returns headers + first bytes classification without streaming whole video
+app.get('/proxy-head/:fileId', async (req, res) => {
+  const { fileId } = req.params;
+  const primaryMode = (process.env.DRIVE_PRIMARY_MODE || 'api').toLowerCase();
+  // If API primary and creds exist, do a lightweight API range probe first
+  if (primaryMode === 'api' && (process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.DRIVE_SA_JSON || process.env.GOOGLE_SERVICE_ACCOUNT_JSON)) {
+    try {
+      const client = await getDriveAuthClient();
+      const reqHdrs = await client.getRequestHeaders();
+      const authH = reqHdrs.Authorization || reqHdrs.authorization;
+      const token = authH && authH.startsWith('Bearer ') ? authH.substring(7) : null;
+      if (!token) throw new Error('no_token');
+      const probe = await axios.get(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+        headers: { Authorization: `Bearer ${token}`, Range: 'bytes=0-2047' },
+        responseType: 'arraybuffer',
+        validateStatus: s => [200,206].includes(s)
+      });
+      const buf = Buffer.from(probe.data);
+      const ascii = buf.toString('utf8');
+      const looksHtml = ascii.toLowerCase().includes('<html');
+      let containerGuess = 'unknown';
+      if (ascii.includes('ftyp')) containerGuess = 'mp4_like';
+      if (!looksHtml) {
+        return res.json({ fileId, ok: true, best: { source: 'drive_api', status: probe.status, contentType: probe.headers['content-type'], bytesReturned: buf.length, containerGuess }, attempts: [] });
+      }
+      // If HTML (shouldn't happen for API) fall through to legacy flow
+      console.warn('proxy-head api primary returned html-looking content, falling back to html confirm flow');
+    } catch (e) {
+      console.warn('proxy-head api probe failed:', e.message, 'falling back to html confirm flow');
+    }
+  }
+  const jar = buildJar();
+  const rangeHeader = 'bytes=0-2047';
+  const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
+  const baseHeaders = { 'User-Agent': UA, 'Accept': 'video/*;q=0.9,*/*;q=0.6', 'Range': rangeHeader };
+  const candidates = [
+    { url: `https://drive.usercontent.google.com/download?id=${fileId}&export=download`, tag: 'usercontent' },
+    { url: `https://drive.google.com/uc?export=download&id=${fileId}`, tag: 'uc' }
+  ];
+  const attempts = [];
+  for (const cand of candidates) {
+    try {
+      // HTML first
+      const htmlResp = await initialHtmlFetch(cand.url, jar, baseHeaders);
+      const ctype = (htmlResp.headers['content-type']||'').toLowerCase();
+      const isHtml = ctype.includes('text/html');
+      let tokens = [];
+      let finalUrl = cand.url;
+      if (isHtml) {
+        tokens = extractConfirmTokens(htmlResp.html);
+        if (tokens.length) {
+          finalUrl = `https://drive.google.com/uc?export=download&confirm=${tokens[0]}&id=${fileId}`;
+        }
+      }
+      // Byte probe
+      const probe = await driveClient.get(finalUrl, { headers: baseHeaders, jar, withCredentials: true, responseType: 'arraybuffer', validateStatus: s => [200,206].includes(s) });
+      const buf = Buffer.from(probe.data);
+      const ascii = buf.toString('utf8');
+      const looksHtml = ascii.toLowerCase().includes('<html');
+      let containerGuess = 'unknown';
+      if (ascii.includes('ftyp')) containerGuess = 'mp4_like';
+      attempts.push({
+        source: cand.tag,
+        status: probe.status,
+        initialHtml: isHtml,
+        confirmTried: tokens[0] || null,
+        contentType: probe.headers['content-type'],
+        bytesReturned: buf.length,
+        looksHtml,
+        containerGuess,
+        hexPreview: buf.slice(0,32).toString('hex')
+      });
+      if (!looksHtml && containerGuess === 'mp4_like') {
+        return res.json({ fileId, ok: true, best: attempts[attempts.length-1], attempts });
+      }
+    } catch (e) {
+      attempts.push({ source: cand.tag, error: e.message });
+    }
+  }
+  res.json({ fileId, ok: false, attempts });
 });
 
 // Proxy health check
@@ -351,6 +516,163 @@ app.get('/proxy-test/:fileId', (req, res) => {
       `https://drive.usercontent.google.com/download?id=${fileId}&export=download`
     ]
   });
+});
+
+// Helper: spawn ffmpeg with progress parsing
+function runFfmpegWithProgress(args, jobId, inputPath, outputPath) {
+  console.log('🎞  Transcode start:', args.join(' '));
+  updateJob(jobId, { status: 'processing' });
+  const started = Date.now();
+  const proc = spawn('ffmpeg', args);
+  proc.stderr.on('data', chunk => {
+    const text = chunk.toString();
+    const job = transcodeJobs.get(jobId); if (!job) return;
+    // Keep tail (last ~25 lines max 4k chars)
+    text.split(/\r?\n/).filter(l=>l.trim()).forEach(l=>{
+      job.logTail.push(l); if (job.logTail.length>25) job.logTail.shift();
+      // Parse time=, fps=, speed=
+      if (l.includes('time=')) {
+        const tMatch = l.match(/time=([0-9:.]+)/);
+        if (tMatch) {
+          // Convert HH:MM:SS.xx -> seconds
+            const parts = tMatch[1].split(':');
+            let seconds = 0; if (parts.length===3) seconds = (+parts[0])*3600 + (+parts[1])*60 + parseFloat(parts[2]);
+            job.progress = seconds; // raw seconds; client can compare
+        }
+        const fpsM = l.match(/fps=\s*([0-9.]+)/); if (fpsM) job.fps = parseFloat(fpsM[1]);
+        const spdM = l.match(/speed=\s*([0-9.]+)x/); if (spdM) job.speed = parseFloat(spdM[1]);
+      }
+    });
+    job.updated = Date.now();
+  });
+  proc.on('error', err => {
+    console.error('❌ ffmpeg spawn error:', err.message);
+    updateJob(jobId, { status: 'error', error: 'ffmpeg_spawn', detail: err.message });
+  });
+  proc.on('close', code => {
+    const ms = Date.now() - transcodeJobs.get(jobId).created;
+    if (code === 0) {
+      // Validate output
+      fs.stat(outputPath, (err, st) => {
+        if (err || !st || st.size < 1000) {
+          console.error('⚠️ Output validation failed (size too small)');
+          updateJob(jobId, { status: 'error', error: 'invalid_output', tookMs: ms });
+        } else {
+          updateJob(jobId, { status: 'done', tookMs: ms, outputUrl: `/transcodes/${path.basename(outputPath)}` });
+          console.log(`✅ Transcode success in ${ms}ms -> ${transcodeJobs.get(jobId).outputUrl}`);
+        }
+        fs.unlink(inputPath, ()=>{});
+      });
+    } else {
+      console.error('❌ Transcode failed code=' + code);
+      updateJob(jobId, { status: 'error', error: 'exit_code_'+code });
+      fs.unlink(inputPath, ()=>{});
+      // Remove partial output
+      fs.unlink(outputPath, ()=>{});
+    }
+  });
+}
+
+// Transcode upload endpoint (auto converts every upload to standardized H.264/AAC)
+// Query param async=1 for immediate job response (poll /transcode/jobs/:id)
+app.post('/transcode/upload', upload.single('video'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  const inputPath = req.file.path;
+  const base = path.basename(inputPath).replace(/\.[^.]+$/, '');
+  const outFile = base + '_h264.mp4';
+  const outputPath = path.join(TRANSCODE_DIR, outFile);
+
+  const preset = process.env.TX_PRESET || 'fast';
+  const crf = process.env.TX_CRF || '20';
+  const aBitrate = process.env.TX_ABR || '160k';
+  const gop = process.env.TX_GOP || '96';
+  const args = [
+    '-y','-hide_banner','-i', inputPath,
+    '-c:v','libx264','-preset',preset,'-crf',crf,'-profile:v','high','-level','4.1','-pix_fmt','yuv420p',
+    '-c:a','aac','-b:a',aBitrate,
+    '-movflags','+faststart',
+    '-g', gop, '-keyint_min', gop,
+    outputPath
+  ];
+
+  const job = createJob({ originalName: req.file.originalname, size: req.file.size });
+  runFfmpegWithProgress(args, job.id, inputPath, outputPath);
+
+  if (req.query.async === '1') {
+    return res.json({ jobId: job.id, status: 'queued' });
+  }
+  // Synchronous wait (stream job polling) - simple loop using interval until done or error
+  const startWait = Date.now();
+  const interval = setInterval(()=>{
+    const j = transcodeJobs.get(job.id);
+    if (!j) { clearInterval(interval); return res.status(500).json({ error:'job_missing'}); }
+    if (j.status === 'done') { clearInterval(interval); return res.json({ status:'ok', url: j.outputUrl, tookMs: j.tookMs }); }
+    if (j.status === 'error') { clearInterval(interval); return res.status(500).json({ error: j.error, logTail: j.logTail.slice(-10) }); }
+    if (Date.now() - startWait > 15*60*1000) { clearInterval(interval); return res.status(504).json({ error:'timeout'}); }
+  }, 800);
+});
+
+// Job status endpoint
+app.get('/transcode/jobs/:id', (req,res)=>{
+  const j = transcodeJobs.get(req.params.id);
+  if (!j) return res.status(404).json({ error:'not_found' });
+  res.json({ id:j.id,status:j.status,progressSeconds:j.progress,fps:j.fps,speed:j.speed,eta:j.eta,outputUrl:j.outputUrl,updated:j.updated,logTail:j.logTail.slice(-8),tookMs:j.tookMs});
+});
+
+// --- Transcode Inspection (ffprobe) ---
+function safeOutputName(name) {
+  // prevent path traversal; only allow simple filenames that exist in transcodes
+  if (!name || name.includes('/') || name.includes('..')) return null;
+  return name;
+}
+
+function runFfprobeJson(targetPath) {
+  return new Promise((resolve, reject) => {
+    if (!fs.existsSync(targetPath)) return reject(new Error('missing_file'));
+    const args = ['-v','quiet','-print_format','json','-show_format','-show_streams', targetPath];
+    const proc = spawn('ffprobe', args);
+    let out=''; let err='';
+    const timer = setTimeout(()=>{ proc.kill('SIGKILL'); reject(new Error('ffprobe_timeout')); }, 10000);
+    proc.stdout.on('data', d=> out += d.toString());
+    proc.stderr.on('data', d=> err += d.toString());
+    proc.on('error', e=> { clearTimeout(timer); reject(e); });
+    proc.on('close', code=> {
+      clearTimeout(timer);
+      if (code===0) {
+        try { return resolve(JSON.parse(out)); } catch(parseErr){ return reject(new Error('parse_error')); }
+      }
+      reject(new Error('ffprobe_exit_'+code+ (err? ':'+err.trim():'')));
+    });
+  });
+}
+
+// Inspect by filename already in /transcodes
+app.get('/transcode/inspect/:file', async (req,res)=>{
+  const fname = safeOutputName(req.params.file);
+  if (!fname) return res.status(400).json({ error:'bad_filename'});
+  const full = path.join(TRANSCODE_DIR, fname);
+  try {
+    const meta = await runFfprobeJson(full);
+    res.json({ file: fname, meta });
+  } catch (e) {
+    if (e.message === 'missing_file') return res.status(404).json({ error:'not_found'});
+    res.status(500).json({ error:'probe_failed', detail: e.message });
+  }
+});
+
+// Inspect by job id (if job done)
+app.get('/transcode/jobs/:id/inspect', async (req,res)=>{
+  const j = transcodeJobs.get(req.params.id);
+  if (!j) return res.status(404).json({ error:'not_found'});
+  if (j.status !== 'done' || !j.outputUrl) return res.status(400).json({ error:'not_ready', status:j.status });
+  const fname = path.basename(j.outputUrl);
+  const full = path.join(TRANSCODE_DIR, fname);
+  try {
+    const meta = await runFfprobeJson(full);
+    res.json({ id:j.id, file: fname, meta });
+  } catch (e) {
+    res.status(500).json({ error:'probe_failed', detail:e.message });
+  }
 });
 
 // Routes
@@ -376,6 +698,34 @@ app.get('/api/room-info', (req, res) => {
     isPlaying: movieRoom.isPlaying,
     lastUpdate: movieRoom.lastUpdate
   });
+});
+
+// Login endpoint
+app.post('/api/login', (req, res) => {
+  const { username, password } = req.body;
+  
+  // Get credentials from environment variables
+  const validCredentials = {
+    [process.env.LOGIN_USER1 || 'samyuctaa']: process.env.LOGIN_PASS1 || 'yukshar',
+    [process.env.LOGIN_USER2 || 'sharada']: process.env.LOGIN_PASS2 || 'yukshar'
+  };
+  
+  console.log(`🔐 Login attempt for user: ${username}`);
+  
+  if (validCredentials[username] && validCredentials[username] === password) {
+    console.log(`✅ Login successful for: ${username}`);
+    res.json({ 
+      success: true, 
+      message: 'Login successful',
+      user: username 
+    });
+  } else {
+    console.log(`❌ Login failed for: ${username}`);
+    res.status(401).json({ 
+      success: false, 
+      message: 'Invalid credentials' 
+    });
+  }
 });
 
 // Socket.IO connection handling
@@ -408,6 +758,31 @@ io.on("connection", (socket) => {
       const { type, time, timestamp } = data;
       
       console.log(`🎮 Control ${type.toUpperCase()}: ${time}s from ${userId.substring(0, 6)} at ${new Date().toLocaleTimeString()}`);
+      
+      // Handle buffering events
+      if (type === 'buffering') {
+        console.log(`🔄 User ${userId.substring(0, 6)} is buffering`);
+        // Broadcast buffering state to all other users
+        socket.broadcast.emit('control', {
+          type: 'buffering',
+          time: time,
+          timestamp: Date.now(),
+          from: userId.substring(0, 6)
+        });
+        return;
+      }
+      
+      if (type === 'buffer-ready') {
+        console.log(`✅ User ${userId.substring(0, 6)} finished buffering`);
+        // Broadcast buffer ready state to all other users
+        socket.broadcast.emit('control', {
+          type: 'buffer-ready',
+          time: time,
+          timestamp: Date.now(),
+          from: userId.substring(0, 6)
+        });
+        return;
+      }
       
       // Update room state based on control type
       if (time !== undefined && !isNaN(time)) {
