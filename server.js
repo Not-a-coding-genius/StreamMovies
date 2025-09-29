@@ -178,6 +178,7 @@ async function getDriveAuthClient(scopes = ['https://www.googleapis.com/auth/dri
 
 async function streamViaDriveApi(fileId, rangeHeader, res) {
   try {
+    console.log(`🔄 Drive API: Starting stream for fileId=${fileId}, range=${rangeHeader || 'none'}`);
     const client = await getDriveAuthClient();
     const base = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
     const headers = {};
@@ -187,18 +188,36 @@ async function streamViaDriveApi(fileId, rangeHeader, res) {
   const authH = reqHdrs.Authorization || reqHdrs.authorization;
   if (!authH || !authH.startsWith('Bearer ')) throw new Error('missing_bearer_header');
   const token = authH.substring(7);
+    console.log(`🔄 Drive API: Making request to ${base}`);
+    console.log(`🔄 Drive API: Token length=${token.length}, Range=${rangeHeader || 'none'}`);
+    
     const apiResp = await axios.get(base, {
       headers: { ...headers, Authorization: `Bearer ${token}` },
       responseType: 'stream',
-      validateStatus: s => [200,206].includes(s)
+      validateStatus: s => [200,206].includes(s),
+      timeout: 30000 // 30 second timeout
     });
+    
+    console.log(`✅ Drive API: Response status=${apiResp.status}, content-type=${apiResp.headers['content-type']}`);
+    console.log(`✅ Drive API: Content-length=${apiResp.headers['content-length']}, Content-range=${apiResp.headers['content-range'] || 'none'}`);
+    
     // Content type may not always be present; attempt fallback
     const ctype = apiResp.headers['content-type'] || 'video/mp4';
     if (apiResp.headers['content-range']) res.status(206).set('Content-Range', apiResp.headers['content-range']);
     if (apiResp.headers['content-length']) res.set('Content-Length', apiResp.headers['content-length']);
     res.set({ 'Content-Type': ctype, 'Accept-Ranges': 'bytes', 'X-Proxy-Source': 'drive_api' });
+    
+    let bytesStreamed = 0;
+    apiResp.data.on('data', (chunk) => {
+      bytesStreamed += chunk.length;
+    });
+    
+    apiResp.data.on('end', () => {
+      console.log(`✅ Drive API: Stream completed, ${bytesStreamed} bytes streamed`);
+    });
+    
     apiResp.data.on('error', err => {
-      console.error('Drive API stream error', err.message);
+      console.error('❌ Drive API stream error:', err.message);
       if (!res.headersSent) res.status(500).end();
     });
     apiResp.data.pipe(res);
@@ -206,7 +225,16 @@ async function streamViaDriveApi(fileId, rangeHeader, res) {
   } catch (e) {
     const status = e.response?.status;
     const bodySnippet = e.response?.data ? (typeof e.response.data === 'string' ? e.response.data.slice(0,200) : JSON.stringify(e.response.data).slice(0,200)) : null;
-    console.warn('Drive API fallback failed:', e.message, 'status=', status, 'snippet=', bodySnippet);
+    console.error('❌ Drive API fallback failed:', e.message, 'status=', status, 'snippet=', bodySnippet);
+    console.error('❌ Drive API error details:', {
+      code: e.code,
+      message: e.message,
+      response: e.response ? {
+        status: e.response.status,
+        statusText: e.response.statusText,
+        headers: e.response.headers
+      } : 'no response'
+    });
     if (!res.headersSent) {
       res.set('X-Drive-Error', String(status||'unknown'));
     }
@@ -427,6 +455,69 @@ app.get('/render-test', (req, res) => {
     },
     timestamp: new Date().toISOString()
   });
+});
+
+// Test specific Google Drive file access
+app.get('/drive-test/:fileId', async (req, res) => {
+  const { fileId } = req.params;
+  
+  try {
+    console.log(`🧪 Testing Drive file access for: ${fileId}`);
+    const client = await getDriveAuthClient();
+    
+    // Test file metadata access
+    const metaUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?fields=id,name,size,mimeType,permissions`;
+    const reqHdrs = await client.getRequestHeaders();
+    const authH = reqHdrs.Authorization || reqHdrs.authorization;
+    
+    const metaResp = await axios.get(metaUrl, {
+      headers: { Authorization: authH },
+      timeout: 10000
+    });
+    
+    console.log(`✅ File metadata retrieved:`, metaResp.data);
+    
+    // Test media download (first 1024 bytes)
+    const mediaUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+    const testResp = await axios.get(mediaUrl, {
+      headers: { 
+        Authorization: authH,
+        Range: 'bytes=0-1023'
+      },
+      responseType: 'arraybuffer',
+      timeout: 10000
+    });
+    
+    console.log(`✅ Media access test: status=${testResp.status}, bytes=${testResp.data.byteLength}`);
+    
+    res.json({
+      success: true,
+      fileId,
+      metadata: metaResp.data,
+      mediaTest: {
+        status: testResp.status,
+        contentType: testResp.headers['content-type'],
+        contentLength: testResp.headers['content-length'],
+        contentRange: testResp.headers['content-range'],
+        bytesReceived: testResp.data.byteLength
+      },
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error(`❌ Drive test failed for ${fileId}:`, error.message);
+    res.status(500).json({
+      success: false,
+      fileId,
+      error: {
+        message: error.message,
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        data: error.response?.data
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
 });
 
 // Permissions listing route
