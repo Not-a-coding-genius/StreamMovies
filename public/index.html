@@ -1449,6 +1449,17 @@
         console.log('✅ Video data downloading');
       });
       
+      // Handle video ready for subtitles
+      player.one('loadedmetadata', () => {
+        console.log('✅ Video metadata loaded - checking for pending subtitles');
+        
+        // Add any pending subtitles
+        if (window.pendingSubtitleUrl) {
+          console.log('📝 Adding pending subtitles...');
+          addSubtitleTrack(window.pendingSubtitleUrl, window.pendingSubtitleName);
+        }
+      });
+      
       // Handle subtitle file if uploaded
       const subtitleInput = document.getElementById('subtitleInput');
       if (subtitleInput.files && subtitleInput.files[0]) {
@@ -1478,58 +1489,116 @@
           
           // Convert SRT to VTT if needed
           if (file.name.toLowerCase().endsWith('.srt')) {
+            console.log('🔄 Converting SRT to VTT...');
             subtitleContent = convertSrtToVtt(subtitleContent);
           }
+          
+          console.log('📝 Subtitle content prepared, length:', subtitleContent.length);
           
           // Create a blob URL for the subtitle
           const blob = new Blob([subtitleContent], { type: 'text/vtt' });
           const subtitleUrl = URL.createObjectURL(blob);
           
+          console.log('🔗 Subtitle blob URL created:', subtitleUrl);
+          
+          // Store subtitle URL globally for use after video loads
+          window.pendingSubtitleUrl = subtitleUrl;
+          window.pendingSubtitleName = file.name;
+          
           // Add subtitle track to Video.js player
-          if (player && player.ready) {
-            player.ready(() => {
-              try {
-                // Add new subtitle track using Video.js method
-                player.addRemoteTextTrack({
-                  kind: 'subtitles',
-                  label: 'Subtitles',
-                  language: 'en',
-                  src: subtitleUrl,
-                  default: true
-                }, false);
-                
-                console.log('📝 Subtitles loaded:', file.name);
-                showToast(`Subtitles loaded: ${file.name}`, 'success');
-              } catch (trackError) {
-                console.error('Error adding subtitle track:', trackError);
-                showToast('Error loading subtitles', 'error');
-              }
-            });
-          }
+          addSubtitleTrack(subtitleUrl, file.name);
+          
         } catch (error) {
-          console.error('Error processing subtitle file:', error);
+          console.error('❌ Error processing subtitle file:', error);
           showToast('Error processing subtitle file', 'error');
         }
       };
       
       fileReader.onerror = function() {
-        console.error('Error reading subtitle file');
+        console.error('❌ Error reading subtitle file');
         showToast('Error reading subtitle file', 'error');
       };
       
-      fileReader.readAsText(file);
+      fileReader.readAsText(file, 'utf-8');
+    }
+    
+    function addSubtitleTrack(subtitleUrl, fileName) {
+      if (!player) {
+        console.warn('⚠️ Player not ready, will add subtitles after video loads');
+        return;
+      }
+      
+      // Remove any existing subtitle tracks first
+      const tracks = player.textTracks();
+      for (let i = tracks.length - 1; i >= 0; i--) {
+        if (tracks[i].kind === 'subtitles') {
+          console.log('🗑️ Removing existing subtitle track');
+          player.removeRemoteTextTrack(tracks[i]);
+        }
+      }
+      
+      // Add new subtitle track
+      try {
+        console.log('📝 Adding subtitle track to player...');
+        
+        const track = player.addRemoteTextTrack({
+          kind: 'subtitles',
+          label: fileName || 'Subtitles',
+          language: 'en',
+          src: subtitleUrl,
+          default: true
+        }, false);
+        
+        console.log('✅ Subtitle track added:', track);
+        
+        // Enable the track
+        setTimeout(() => {
+          const textTracks = player.textTracks();
+          for (let i = 0; i < textTracks.length; i++) {
+            if (textTracks[i].kind === 'subtitles') {
+              textTracks[i].mode = 'showing';
+              console.log('✅ Subtitle track enabled');
+              break;
+            }
+          }
+        }, 1000);
+        
+        showToast(`Subtitles loaded: ${fileName}`, 'success');
+        
+      } catch (trackError) {
+        console.error('❌ Error adding subtitle track:', trackError);
+        showToast('Error loading subtitles', 'error');
+      }
     }
 
     // Convert SRT format to VTT format
     function convertSrtToVtt(srtContent) {
+      console.log('🔄 Converting SRT to VTT format...');
+      
       let vttContent = 'WEBVTT\n\n';
       
-      // Replace SRT timestamp format with VTT format
-      vttContent += srtContent
-        .replace(/(\d+:\d+:\d+),(\d+)/g, '$1.$2')  // Replace comma with dot in timestamps
-        .replace(/^\d+\s*$/gm, '')                 // Remove sequence numbers
-        .replace(/\n\n\n/g, '\n\n');              // Clean up extra newlines
+      // Split content into blocks
+      const blocks = srtContent.trim().split(/\n\s*\n/);
       
+      for (let block of blocks) {
+        if (!block.trim()) continue;
+        
+        const lines = block.trim().split('\n');
+        if (lines.length < 3) continue; // Skip invalid blocks
+        
+        // Skip the sequence number (first line)
+        const timeLine = lines[1];
+        const textLines = lines.slice(2);
+        
+        // Convert timestamp format: 00:01:23,456 --> 00:01:25,789 becomes 00:01:23.456 --> 00:01:25.789
+        const convertedTimeLine = timeLine.replace(/,/g, '.');
+        
+        // Add to VTT content
+        vttContent += convertedTimeLine + '\n';
+        vttContent += textLines.join('\n') + '\n\n';
+      }
+      
+      console.log('✅ SRT to VTT conversion complete');
       return vttContent;
     }
 
@@ -2229,6 +2298,17 @@ If a video fails to load, the app will automatically try multiple URL formats to
       
       console.log('🎬 Initializing Movie Sync Client');
       updateStatus('Connecting...', 'syncing');
+      
+      // Set up subtitle file input handler
+      const subtitleInput = document.getElementById('subtitleInput');
+      if (subtitleInput) {
+        subtitleInput.addEventListener('change', function(e) {
+          if (e.target.files && e.target.files[0]) {
+            console.log('📝 Subtitle file selected:', e.target.files[0].name);
+            handleSubtitleFile(e.target.files[0]);
+          }
+        });
+      }
       
       // Try to initialize Video.js player with delay
       setTimeout(() => {
